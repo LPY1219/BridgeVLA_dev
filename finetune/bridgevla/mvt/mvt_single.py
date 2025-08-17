@@ -130,6 +130,8 @@ class MVT(nn.Module):
             out_dim=1,
             up_ratio=self.img_patch_size,
         )
+        # Ensure up0 uses the same dtype as the main model
+        self.up0 = self.up0.to(torch.bfloat16)
 
         if not self.no_feat:
             feat_fc_dim = 0
@@ -167,26 +169,28 @@ class MVT(nn.Module):
                 self.feat_fc = get_feat_fc(
                     self.num_img * feat_fc_dim,
                     feat_out_size,
-                )
+                ).to(torch.bfloat16)
             elif self.rot_ver == 1:
                 assert self.num_rot * 3 <= feat_out_size
                 feat_out_size_ex_rot = feat_out_size - (self.num_rot * 3)
                 if feat_out_size_ex_rot > 0:
                     self.feat_fc_ex_rot = get_feat_fc(
                         self.num_img * feat_fc_dim, feat_out_size_ex_rot
-                    )
+                    ).to(torch.bfloat16)
 
-                self.feat_fc_init_bn = nn.BatchNorm1d(self.num_img * feat_fc_dim)
+                self.feat_fc_init_bn = nn.BatchNorm1d(self.num_img * feat_fc_dim).to(torch.bfloat16)
                 self.feat_fc_pe = FixedPositionalEncoding(
                     self.num_img * feat_fc_dim, feat_scale_factor=1
-                )
-                self.feat_fc_x = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot)
-                self.feat_fc_y = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot)
-                self.feat_fc_z = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot)
+                ).to(torch.bfloat16)
+                self.feat_fc_x = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
+                self.feat_fc_y = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
+                self.feat_fc_z = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
 
             else:
                 assert False
 
+        global select_feat_from_hm
+        
         if self.use_point_renderer:
             from point_renderer.rvt_ops import select_feat_from_hm
         else:
@@ -215,7 +219,8 @@ class MVT(nn.Module):
 
 
         # model_id = "google/paligemma-3b-pt-224"
-        model_id="/share/project/lxh/project/VLMs/paligemma-3b-pt-224"
+        # model_id="/share/project/lxh/project/VLMs/paligemma-3b-pt-224"
+        model_id="/data/lpy/huggingface/paligemma-3b-pt-224"
         if load_pretrain:
             assert pretrain_path is not None
 
@@ -238,6 +243,8 @@ class MVT(nn.Module):
             missing_keys_up0, unexpected_keys_up0 = self.up0.load_state_dict(custom_params, strict=True)
             print("Missing keys up0:", missing_keys_up0)  # Should be an empty list
             print("Unexpected keys up0 :", unexpected_keys_up0) # Should be an empty list
+            # Ensure up0 maintains bfloat16 dtype after loading weights
+            self.up0 = self.up0.to(torch.bfloat16)
             import time
             time.sleep(5)
 
@@ -247,8 +254,6 @@ class MVT(nn.Module):
             self.model = PaliGemmaForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
             self.processor = PaliGemmaProcessor.from_pretrained(model_id)   
             print("You are loading original paligemma model!")
-
-        global select_feat_from_hm
 
     def get_pt_loc_on_img(self, pt, dyn_cam_info):
         """
@@ -427,7 +432,6 @@ class MVT(nn.Module):
                     # sample with argmax
                     rot_x = feat_x.argmax(dim=1, keepdim=True)
 
-                # rot_x_pe = self.feat_fc_pe(rot_x).to(torch.bfloat16)
                 rot_x_pe = self.feat_fc_pe(rot_x)
                 feat_y = self.feat_fc_y(feat_rot + rot_x_pe)
 
@@ -436,7 +440,6 @@ class MVT(nn.Module):
                 else:
                     rot_y = feat_y.argmax(dim=1, keepdim=True)
                 rot_y_pe = self.feat_fc_pe(rot_y)
-                # rot_y_pe = self.feat_fc_pe(rot_y).to(torch.bfloat16)
                 feat_z = self.feat_fc_z(feat_rot + rot_x_pe + rot_y_pe)
                 out = {
                     "feat_ex_rot": feat_ex_rot,

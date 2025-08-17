@@ -61,7 +61,7 @@ finetune/RLBench/train/*/debug/
 finetune/RLBench/*.log
 finetune/bridgevla/libs
 finetune/CoppeliaSim
-
+CLIP/
 # Data and cache
 data/
 *.tar.xz
