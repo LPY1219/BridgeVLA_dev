@@ -59,6 +59,7 @@ libs/
 finetune/RLBench/swanlog/
 finetune/RLBench/train/*/debug/
 finetune/RLBench/*.log
+finetune/bridgevla/libs
 
 # Data and cache
 data/
