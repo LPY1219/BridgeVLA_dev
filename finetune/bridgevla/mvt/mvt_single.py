@@ -311,7 +311,15 @@ class MVT(nn.Module):
 
         assert len(prompts)==len(images)
         model_inputs = self.processor(text=prompts, images=images, return_tensors="pt",padding="longest")
-        model_inputs = model_inputs.to(self.model.dtype).to(self.model.device)
+        
+        # Move inputs to device and convert to model's dtype (bfloat16)
+        model_inputs = model_inputs.to(self.model.device)
+        
+        # Ensure all floating point inputs match the model's dtype
+        model_dtype = next(self.model.parameters()).dtype
+        for key in model_inputs.keys():
+            if torch.is_tensor(model_inputs[key]) and model_inputs[key].dtype.is_floating_point:
+                model_inputs[key] = model_inputs[key].to(dtype=model_dtype)
         outputs = self.model(**model_inputs, output_hidden_states=True)
 
         hidden_states = outputs.hidden_states  
@@ -354,7 +362,7 @@ class MVT(nn.Module):
                 bs * self.num_img, self.vlm_dim, self.num_pat_img, self.num_pat_img
             )
         )
-        x=x.to(torch.float32)
+        # x=x.to(torch.float32)
         
         trans = self.up0(x)
         trans = trans.view(bs, self.num_img, h, w)
@@ -395,6 +403,11 @@ class MVT(nn.Module):
             _feat = _feat.view(bs, -1)
             feat.append(_feat)
             feat = torch.cat(feat, dim=-1)
+            
+            # Ensure feat has the same dtype as model parameters
+            model_dtype = next(self.parameters()).dtype
+            if feat.dtype != model_dtype:
+                feat = feat.to(model_dtype)
 
             if self.rot_ver == 0:
                 feat = self.feat_fc(feat)
