@@ -1,0 +1,15 @@
+debug: false
+deepspeed_config: configs/deepspeed_config_simple.json
+entry: !!python/name:__main__.%3Clambda%3E ''
+epochs: 100
+exp_cfg_opts: ''
+exp_cfg_path: configs/rlbench_config.yaml
+exp_note: ''
+freeze_vision_tower: false
+load_pretrain: false
+local_rank: 0
+log_dir: ''
+mvt_cfg_opts: ''
+mvt_cfg_path: ../bridgevla/mvt/configs/rvt2.yaml
+pretrain_path: null
+refresh_replay: false

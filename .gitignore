@@ -53,8 +53,12 @@ wandb/
 swanlog/
 swanlab/
 PyReP/
-RLBench/
 libs/
+
+# RLBench specific ignores
+finetune/RLBench/swanlog/
+finetune/RLBench/train/*/debug/
+finetune/RLBench/*.log
 
 # Data and cache
 data/
