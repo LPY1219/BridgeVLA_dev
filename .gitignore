@@ -60,6 +60,7 @@ finetune/RLBench/swanlog/
 finetune/RLBench/train/*/debug/
 finetune/RLBench/*.log
 finetune/bridgevla/libs
+finetune/CoppeliaSim
 
 # Data and cache
 data/

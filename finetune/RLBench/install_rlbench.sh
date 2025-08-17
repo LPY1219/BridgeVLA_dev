@@ -1,5 +1,5 @@
 pip install wheel ninja pyyaml -i https://pypi.tuna.tsinghua.edu.cn/simple
-cd /share/project/lpy/BridgeVLA/finetune/bridgevla/libs
+cd /data/lpy/BridgeVLA_dev/finetune/bridgevla/libs
 git clone git@github.com:buttomnutstoast/RLBench.git
 cd RLBench
 git checkout 587a6a0e6dc8cd36612a208724eb275fe8cb4470
@@ -9,8 +9,9 @@ cd PyRep
 git checkout 231a1ac6b0a179cff53c1d403d379260b9f05f2f
 cd  /share/project/lpy/BridgeVLA/finetune
 # wget https://www.coppeliarobotics.com/files/V4_1_0/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz
-tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz;
+# tar -xf CoppeliaSim_Edu_V4_1_0_Ubuntu20_04.tar.xz;
 export COPPELIASIM_ROOT=$(pwd)/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 
+# export COPPELIASIM_ROOT=$(pwd)/CoppeliaSim
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
 export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
 export DISPLAY=:1.0
