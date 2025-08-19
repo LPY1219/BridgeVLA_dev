@@ -532,27 +532,27 @@ class RVTAgent:
 
     def get_q(self, out, dims, only_pred=False, get_q_trans=True):
         """
-        :param out: output of mvt
-        :param dims: tensor dimensions (bs, nc, h, w)
+        :param out: output of mvt 
+        :param dims: tensor dimensions (bs, nc,num_points, h, w)
         :param only_pred: some speedupds if the q values are meant only for
             prediction
         :return: tuple of trans_q, rot_q, grip_q and coll_q that is used for
             training and preduction
         """
-        bs, nc, h, w = dims
+        bs, num_points,nc,h, w = dims
         assert isinstance(only_pred, bool)
 
         if get_q_trans:
             pts = None
             # (bs, h*w, nc)
-            q_trans = out["trans"].view(bs, nc, h * w).transpose(1, 2)
+            q_trans = out["trans"].view(bs, num_points,nc, h * w).view(bs,-1,h*w).transpose(1, 2)
             if not only_pred:
                 q_trans = q_trans.clone()
 
             # if two stages, we concatenate the q_trans, and replace all other
             if self.stage_two:
                 out = out["mvt2"]
-                q_trans2 = out["trans"].view(bs, nc, h * w).transpose(1, 2)
+                q_trans2 = out["trans"].view(bs, num_points,nc, h * w).view(bs,-1,h*w).transpose(1, 2)
                 if not only_pred:
                     q_trans2 = q_trans2.clone()
                 q_trans = torch.cat((q_trans, q_trans2), dim=2)
@@ -563,6 +563,7 @@ class RVTAgent:
                 out = out["mvt2"]
 
         if self.rot_ver == 0:
+            assert False
             # (bs, 218)
             rot_q = out["feat"].view(bs, -1)[:, 0 : self.num_all_rot]
             grip_q = out["feat"].view(bs, -1)[:, self.num_all_rot : self.num_all_rot + 2]
@@ -571,8 +572,9 @@ class RVTAgent:
                 :, self.num_all_rot + 2 : self.num_all_rot + 4
             ]
         elif self.rot_ver == 1:
-            rot_q = torch.cat((out["feat_x"], out["feat_y"], out["feat_z"]),
-                              dim=-1).view(bs, -1)
+            # rot_q = torch.cat((out["feat_x"], out["feat_y"], out["feat_z"]),
+            #                   dim=-1).view(bs, -1)
+            rot_q=None
             grip_q = out["feat_ex_rot"].view(bs, -1)[:, :2]
             collision_q = out["feat_ex_rot"].view(bs, -1)[:, 2:]
         else:
@@ -598,9 +600,9 @@ class RVTAgent:
 
 
         # 不再需要单独计算旋转了
-        # action_rot_grip = replay_sample["rot_grip_action_indicies"][
-        #     :, -1
-        # ].int()  # (b, 4) of int
+        action_rot_grip = replay_sample["rot_grip_action_indicies"][
+            :, -1
+        ].int()  # (b, 4) of int
         action_ignore_collisions = replay_sample["ignore_collisions"][
             :, -1
         ].int()  # (b, 1) of int
@@ -659,16 +661,19 @@ class RVTAgent:
             wpt_local = []
             rev_trans = []
             for _pc, _wpt in zip(pc, wpt):
-                a, b = mvt_utils.place_pc_in_cube( # 是否要适应多个点？
+                a, b = mvt_utils.place_pc_in_cube( #本身就支持多个点的变换
                     _pc,
                     _wpt,
                     with_mean_or_bounds=self._place_with_mean,
                     scene_bounds=None if self._place_with_mean else self.scene_bounds,
                 )
-                wpt_local.append(a.unsqueeze(0))
+                # wpt_local.append(a.unsqueeze(0))
+                wpt_local.append(a)
                 rev_trans.append(b)
 
-            wpt_local = torch.cat(wpt_local, axis=0)
+
+            wpt_local = torch.cat(wpt_local, axis=0) # (B,N,3)
+            wpt_local_with_gt=torch.cat([wpt_local, new_action_gripper_pose[:,:3].unsqueeze(1)], dim=1)#(B,N+1,3)
 
             # TODO: Vectorize
             pc = [
@@ -692,15 +697,15 @@ class RVTAgent:
             dyn_cam_info = None
 
         # 不再需要单独计算旋转的损失
-        # (
-        #     action_rot_x_one_hot,
-        #     action_rot_y_one_hot,
-        #     action_rot_z_one_hot,
-        #     action_grip_one_hot,  # (bs, 2)
-        #     action_collision_one_hot,  # (bs, 2)
-        # ) = self._get_one_hot_expert_actions(
-        #     bs, action_rot, action_grip, action_ignore_collisions, device=self._device
-        # )
+        (
+            action_rot_x_one_hot,
+            action_rot_y_one_hot,
+            action_rot_z_one_hot,
+            action_grip_one_hot,  # (bs, 2)
+            action_collision_one_hot,  # (bs, 2)
+        ) = self._get_one_hot_expert_actions(
+            bs, action_rot, action_grip, action_ignore_collisions, device=self._device
+        )
 
         # if self.rot_ver == 1:
         #     rot_x_y = torch.cat(
@@ -722,17 +727,18 @@ class RVTAgent:
             img_feat=img_feat,
             lang_emb=None,
             img_aug=img_aug,
-            wpt_local=wpt_local if self._network.training else None,
-            rot_x_y=rot_x_y if self.rot_ver == 1 else None,
-            language_goal=replay_sample["lang_goal"]  
+            wpt_local=wpt_local_with_gt if self._network.training else None,
+            # rot_x_y=rot_x_y if self.rot_ver == 1 else None,
+            language_goal=replay_sample["lang_goal"],
+            ee_points_local=self.points_local
         )
         
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
-            out, dims=(bs, nc, h, w)
+            out, dims=(bs, self.num_local_point,nc, h, w)
         ) #修改为适应多个heatmap预测的形式。
 
         action_trans = self.get_action_trans(
-            wpt_local, pts, out, dyn_cam_info, dims=(bs, nc, h, w)
+            wpt_local, pts, out, dyn_cam_info, dims=(bs, self.num_local_point, nc,h, w)
         ) #修改为适应多个heatmap预测的形式。
 
 
@@ -1165,35 +1171,36 @@ class RVTAgent:
     @torch.no_grad()
     def get_action_trans(
         self,
-        wpt_local,
+        wpt_local, # (bs,N,3)
         pts,
         out,
         dyn_cam_info,
         dims,
     ):
-        bs, nc, h, w = dims
+        bs,  num_point,nc,h, w = dims
+        assert num_point==self.num_local_point
         wpt_img = self._net_mod.get_pt_loc_on_img(
-            wpt_local.unsqueeze(1),
+            wpt_local,
             mvt1_or_mvt2=True,
             dyn_cam_info=dyn_cam_info,
             out=None
         )
-        assert wpt_img.shape[1] == 1
+        assert wpt_img.shape[1] == self.num_local_point
         if self.stage_two:
             wpt_img2 = self._net_mod.get_pt_loc_on_img(
-                wpt_local.unsqueeze(1),
+                wpt_local,
                 mvt1_or_mvt2=False,
                 dyn_cam_info=dyn_cam_info,
                 out=out,
             )
-            assert wpt_img2.shape[1] == 1
+            assert wpt_img2.shape[1] == self.num_local_point
 
-            # (bs, 1, 2 * num_img, 2)
+            # (bs, N, 2 * num_img, 2)
             wpt_img = torch.cat((wpt_img, wpt_img2), dim=-2)
             nc = nc * 2
 
-        # (bs, num_img, 2)
-        wpt_img = wpt_img.squeeze(1)
+        # # (bs, num_img, 2)
+        # wpt_img = wpt_img.squeeze(1)
 
         action_trans = mvt_utils.generate_hm_from_pt(
             wpt_img.reshape(-1, 2),
@@ -1201,7 +1208,7 @@ class RVTAgent:
             sigma=self.gt_hm_sigma,
             thres_sigma_times=3,
         )
-        action_trans = action_trans.view(bs, nc, h * w).transpose(1, 2).clone()
+        action_trans = action_trans.view(bs, num_point,nc, h * w).view(bs,-1,h*w).transpose(1, 2).clone()
 
         return action_trans
 

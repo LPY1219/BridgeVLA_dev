@@ -23,9 +23,9 @@ import numpy as np
 import os
 from torch import nn
 import bridgevla.mvt.utils as mvt_utils
-from bridgevla.mvt.mvt_single import MVT as MVTSingle
+from bridgevla.mvt.mvt_single_2 import MVT as MVTSingle
 from bridgevla.mvt.config import get_cfg_defaults
-
+import bridgevla.utils.rvt_utils as rvt_utils
 class MVT(nn.Module):
     def __init__(
         self,
@@ -60,6 +60,7 @@ class MVT(nn.Module):
         st_wpt_loc_inp_no_noise,
         img_aug_2,
         renderer_device,
+        num_local_point=3,
         load_pretrain=False,
         pretrain_path=None,
     ):
@@ -86,6 +87,7 @@ class MVT(nn.Module):
         self.st_wpt_loc_aug = st_wpt_loc_aug
         self.st_wpt_loc_inp_no_noise = st_wpt_loc_inp_no_noise
         self.img_aug_2 = img_aug_2
+        self.num_local_point = num_local_point
 
         # for verifying the input
         self.feat_ver = feat_ver
@@ -103,6 +105,7 @@ class MVT(nn.Module):
             **args,
             renderer=self.renderer,
         )  # we have merged mvt1 and mvt2
+        
 
 
 
@@ -134,8 +137,6 @@ class MVT(nn.Module):
         return out
         
 
-
-
     def get_wpt(self, out, mvt1_or_mvt2, dyn_cam_info, y_q=None):
         """
         Estimate the q-values given output from mvt
@@ -155,7 +156,6 @@ class MVT(nn.Module):
             wpt = out["rev_trans"](wpt)
 
         return wpt
-
 
 
     def render(self, pc, img_feat, img_aug, mvt1_or_mvt2, dyn_cam_info):
@@ -250,7 +250,7 @@ class MVT(nn.Module):
         pc,
         img_feat,
         img_aug,
-        wpt_local,
+        wpt_local_with_gt,
         rot_x_y,
     ):
         bs = len(pc)
@@ -264,18 +264,18 @@ class MVT(nn.Module):
         if self.training:
             assert (
                 (not self.feat_ver == 1)
-                or (not wpt_local is None)
+                or (not wpt_local_with_gt is None)
             )
 
-            if self.rot_ver == 0:
-                assert rot_x_y is None, f"rot_x_y={rot_x_y}"
-            elif self.rot_ver == 1:
-                assert rot_x_y.shape == (bs, 2), f"rot_x_y.shape={rot_x_y.shape}"
-                assert (rot_x_y >= 0).all() and (
-                    rot_x_y < self.num_rot
-                ).all(), f"rot_x_y={rot_x_y}"
-            else:
-                assert False
+            # if self.rot_ver == 0:
+            #     assert rot_x_y is None, f"rot_x_y={rot_x_y}"
+            # elif self.rot_ver == 1:
+            #     assert rot_x_y.shape == (bs, 2), f"rot_x_y.shape={rot_x_y.shape}"
+            #     assert (rot_x_y >= 0).all() and (
+            #         rot_x_y < self.num_rot
+            #     ).all(), f"rot_x_y={rot_x_y}"
+            # else:
+            #     assert False
 
         for _pc, _img_feat in zip(pc, img_feat):
             np, x1 = _pc.shape
@@ -286,21 +286,23 @@ class MVT(nn.Module):
             assert x2 == self.img_feat_dim
 
 
-        if not (wpt_local is None):
-            bs5, x6 = wpt_local.shape
+        if not (wpt_local_with_gt is None):
+            bs5, N, x6 = wpt_local_with_gt.shape
             assert bs == bs5
-            assert x6 == 3, "Does not support wpt_local of shape {wpt_local.shape}"
+            assert N==self.num_local_point+1
+            assert x6 == 3, "Does not support wpt_local_with_gt of shape {wpt_local_with_gt.shape}"
 
         if self.training:
-            assert (not self.stage_two) or (not wpt_local is None)
+            assert (not self.stage_two) or (not wpt_local_with_gt is None)
 
     def forward(
         self,
         pc,
         img_feat,
+        ee_points_local,
         img_aug=0,
-        wpt_local=None,
-        rot_x_y=None,
+        wpt_local_with_gt=None,
+        # rot_x_y=None,
         language_goal=None,
         **kwargs,
     ):
@@ -311,8 +313,8 @@ class MVT(nn.Module):
         :param proprio: tensor of shape (bs, priprio_dim)
         :param lang_emb: tensor of shape (bs, lang_len, lang_dim)
         :param img_aug: (float) magnitude of augmentation in rgb image
-        :param wpt_local: gt location of the wpt in 3D, tensor of shape
-            (bs, 3)
+        :param wpt_local_with_gt: location of the local wpt and gt wpt in 3D, tensor of shape
+            (bs,N+1,3)
         :param rot_x_y: (bs, 2) rotation in x and y direction
         :param language_goal: str (bs,)language instruction
         """
@@ -320,8 +322,8 @@ class MVT(nn.Module):
             pc=pc,
             img_feat=img_feat,
             img_aug=img_aug,
-            wpt_local=wpt_local,
-            rot_x_y=rot_x_y,
+            wpt_local_with_gt=wpt_local_with_gt,
+            # rot_x_y=rot_x_y,
         )
         with torch.no_grad():
             if self.training and (self.img_aug_2 != 0):
@@ -339,16 +341,19 @@ class MVT(nn.Module):
                 dyn_cam_info=None,
             )
         if self.training:
-            wpt_local_stage_one = wpt_local  
+            wpt_local_stage_one = wpt_local_with_gt[:,:-1,:]
+            gt_stage_one = wpt_local_with_gt[:,-1,:]
             wpt_local_stage_one = wpt_local_stage_one.clone().detach()
+            gt_stage_one = gt_stage_one.clone().detach()
         else:
-            wpt_local_stage_one = wpt_local
+            wpt_local_stage_one = None 
+            gt_stage_one = None
         
    
         out = self.mvt1(
             img=img,
             wpt_local=wpt_local_stage_one,
-            rot_x_y=rot_x_y,
+            # rot_x_y=rot_x_y,
             language_goal=language_goal,
             forward_no_feat=True,
             # forward_no_feat=False,
@@ -397,33 +402,33 @@ class MVT(nn.Module):
                 if self.training:
                     # noise is added so that the wpt_local2 is not exactly at
                     # the center of the pc
-                    wpt_local_stage_one_noisy = mvt_utils.add_uni_noi(
-                        wpt_local_stage_one.clone().detach(), 2 * self.st_wpt_loc_aug
+                    gt_stage_one_noisy = mvt_utils.add_uni_noi(
+                        gt_stage_one, 2 * self.st_wpt_loc_aug
                     )
                     pc, rev_trans = mvt_utils.trans_pc(
-                        pc, loc=wpt_local_stage_one_noisy, sca=self.st_sca
+                        pc, loc=gt_stage_one_noisy, sca=self.st_sca
                     )
 
                     if self.st_wpt_loc_inp_no_noise:
                         wpt_local2, _ = mvt_utils.trans_pc(
-                            wpt_local, loc=wpt_local_stage_one_noisy, sca=self.st_sca
+                            wpt_local_stage_one, loc=gt_stage_one_noisy, sca=self.st_sca
                         )
                     else:
                         wpt_local2, _ = mvt_utils.trans_pc(
-                            wpt_local, loc=wpt_local_stage_one, sca=self.st_sca
+                            wpt_local_stage_one, loc=gt_stage_one, sca=self.st_sca
                         )
 
                 else:
-                    # bs, 3
+                    # bs, N，3
                     wpt_local = self.get_wpt(
                         out, y_q=None, mvt1_or_mvt2=True,
                         dyn_cam_info=None,
-                    )
+                    )# 根据多通道heatmap得到最终的wpt
                     pc, rev_trans = mvt_utils.trans_pc(
                         pc, loc=wpt_local, sca=self.st_sca
                     )
                     # bad name!
-                    wpt_local_stage_one_noisy = wpt_local
+                    gt_stage_one_noisy =  rvt_utils.pose_estimate_from_correspondences_torch(ee_points_local, wpt_local)
 
                     # must pass None to mvt2 while in eval
                     wpt_local2 = None
@@ -439,13 +444,13 @@ class MVT(nn.Module):
             out_mvt2 = self.mvt1(
                 img=img,
                 wpt_local=wpt_local2,
-                rot_x_y=rot_x_y,
+                # rot_x_y=rot_x_y,
                 language_goal=language_goal,
                 forward_no_feat=False,
                 **kwargs,
             )
 
-            out["wpt_local1"] = wpt_local_stage_one_noisy
+            out["wpt_local1"] = gt_stage_one_noisy
             out["rev_trans"] = rev_trans 
             out["mvt2"] = out_mvt2
             out["mvt2_ori_img"]=img.clone().detach()
