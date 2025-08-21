@@ -251,7 +251,7 @@ class MVT(nn.Module):
         img_feat,
         img_aug,
         wpt_local_with_gt,
-        rot_x_y,
+        # rot_x_y,
     ):
         bs = len(pc)
         assert bs == len(img_feat)
@@ -261,11 +261,11 @@ class MVT(nn.Module):
             assert img_aug == 0
             # assert rot_x_y is None, f"rot_x_y={rot_x_y}"
 
-        if self.training:
-            assert (
-                (not self.feat_ver == 1)
-                or (not wpt_local_with_gt is None)
-            )
+        # if self.training:
+        #     assert (
+        #         (not self.feat_ver == 1)
+        #         or (not wpt_local_with_gt is None)
+        #     )
 
             # if self.rot_ver == 0:
             #     assert rot_x_y is None, f"rot_x_y={rot_x_y}"
@@ -408,6 +408,7 @@ class MVT(nn.Module):
                     pc, rev_trans = mvt_utils.trans_pc(
                         pc, loc=gt_stage_one_noisy, sca=self.st_sca
                     )
+                    # Convert point cloud tensors to double precision for numerical stability
 
                     if self.st_wpt_loc_inp_no_noise:
                         wpt_local2, _ = mvt_utils.trans_pc(
@@ -426,7 +427,7 @@ class MVT(nn.Module):
                     )# 根据多通道heatmap得到最终的wpt
                     pc, rev_trans = mvt_utils.trans_pc(
                         pc, loc=wpt_local, sca=self.st_sca
-                    )
+                    )  # 先计算ground truth
                     # bad name!
                     gt_stage_one_noisy =  rvt_utils.pose_estimate_from_correspondences_torch(ee_points_local, wpt_local)
 

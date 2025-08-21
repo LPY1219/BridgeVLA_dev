@@ -254,7 +254,7 @@ def quat_to_R_torch(q):
     q: (B,4) quaternion (x,y,z,w)
     return: (B,3,3)
     """
-    q = torch.as_tensor(q, dtype=torch.float64)
+    q = torch.as_tensor(q)
     q = q / (q.norm(dim=-1, keepdim=True) + 1e-12)
     x, y, z, w = q.unbind(-1)
 
@@ -274,7 +274,7 @@ def R_to_quat_torch(R):
     R: (B,3,3)
     return: (B,4) quaternion (x,y,z,w) 归一化
     """
-    R = torch.as_tensor(R, dtype=torch.float64)
+    R = torch.as_tensor(R)
     w = torch.sqrt(torch.clamp(1 + R[:,0,0] + R[:,1,1] + R[:,2,2], min=0)) / 2
     x = torch.sqrt(torch.clamp(1 + R[:,0,0] - R[:,1,1] - R[:,2,2], min=0)) / 2
     y = torch.sqrt(torch.clamp(1 - R[:,0,0] + R[:,1,1] - R[:,2,2], min=0)) / 2
@@ -292,8 +292,8 @@ def pose_apply_torch(points_local, poses_base):
     poses_base:   (B,7) [tx,ty,tz, qx,qy,qz,qw]
     return:       (B,N,3)
     """
-    P = torch.as_tensor(points_local, dtype=torch.float64)           # (N,3)
-    poses = torch.as_tensor(poses_base, dtype=torch.float64)         # (B,7)
+    P = torch.as_tensor(points_local)           # (N,3)
+    poses = torch.as_tensor(poses_base)         # (B,7)
     t = poses[:, :3]                                                 # (B,3)
     q = poses[:, 3:]                                                 # (B,4)
     R = quat_to_R_torch(q)                                           # (B,3,3)
@@ -329,8 +329,8 @@ def kabsch_from_corresp_torch(points_local, points_base_pred):
     points_base_pred: (B,N,3)
     return: poses(B,7), R(B,3,3), t(B,3)
     """
-    P = torch.as_tensor(points_local, dtype=torch.float64)     # (N,3)
-    Q = torch.as_tensor(points_base_pred, dtype=torch.float64) # (B,N,3)
+    P = torch.as_tensor(points_local)     # (N,3)
+    Q = torch.as_tensor(points_base_pred) # (B,N,3)
     B, N, _ = Q.shape
     assert P.shape == (N,3), "points_local must be (N,3) and match Q's N"
 
@@ -376,8 +376,8 @@ def pose_estimate_from_correspondences_torch(
         poses:        (B,7)  [t, qx,qy,qz,qw]
         inlier_masks: (B,N)  bool，若 use_ransac=False 则全 True
     """
-    P_all = torch.as_tensor(points_local, dtype=torch.float64)      # (N,3)
-    Q_all = torch.as_tensor(points_base_pred, dtype=torch.float64)  # (B,N,3)
+    P_all = torch.as_tensor(points_local)      # (N,3)
+    Q_all = torch.as_tensor(points_base_pred)  # (B,N,3)
     B, N, _ = Q_all.shape
     assert P_all.shape == (N,3), "points_local must be (N,3) and match Q's N"
 
@@ -392,7 +392,7 @@ def pose_estimate_from_correspondences_torch(
     else:
         g = None
 
-    poses_out = torch.zeros((B,7), dtype=torch.float64)
+    poses_out = torch.zeros((B,7))
     inlier_masks = torch.zeros((B,N), dtype=torch.bool)
 
     for b in range(B):
@@ -490,8 +490,8 @@ def compute_pose_errors_torch(poses_est, poses_gt):
       'rot_deg':  (B,)
       'trans_l2': (B,)
     """
-    poses_est = torch.as_tensor(poses_est, dtype=torch.float64)
-    poses_gt  = torch.as_tensor(poses_gt,  dtype=torch.float64)
+    poses_est = torch.as_tensor(poses_est)
+    poses_gt  = torch.as_tensor(poses_gt)
     assert poses_est.shape == poses_gt.shape and poses_est.shape[-1] == 7, \
         "poses_est/poses_gt must be (B,7)"
 

@@ -457,11 +457,12 @@ class RVTAgent:
         # define three points to represent the pose
         self.points_local=torch.tensor([[0.1, 0.0, 0.0],
                                         [0.0, 0.1, 0.0],
-                                        [0.0, 0.0, 0.1]],device=self._device)
+                                        [0.0, 0.0, 0.1]])
 
     def build(self, training: bool, device: torch.device = None):
         self._training = training
         self._device = device
+        self.points_local = self.points_local.to(device)
         params_to_optimize = filter(lambda p: p.requires_grad, self._network.parameters())
 
         self._optimizer = torch.optim.Adam(
@@ -505,13 +506,13 @@ class RVTAgent:
 
         # fill one-hots
         for b in range(bs):
-            gt_rot = action_rot[b]
-            gt_rot = aug_utils.quaternion_to_discrete_euler(
-                gt_rot, self._rotation_resolution
-            )
-            action_rot_x_one_hot[b, gt_rot[0]] = 1
-            action_rot_y_one_hot[b, gt_rot[1]] = 1
-            action_rot_z_one_hot[b, gt_rot[2]] = 1
+            # gt_rot = action_rot[b]
+            # gt_rot = aug_utils.quaternion_to_discrete_euler(
+            #     gt_rot, self._rotation_resolution
+            # )
+            # action_rot_x_one_hot[b, gt_rot[0]] = 1
+            # action_rot_y_one_hot[b, gt_rot[1]] = 1
+            # action_rot_z_one_hot[b, gt_rot[2]] = 1
 
             # grip
             gt_grip = action_grip[b]
@@ -544,15 +545,15 @@ class RVTAgent:
 
         if get_q_trans:
             pts = None
-            # (bs, h*w, nc)
-            q_trans = out["trans"].view(bs, num_points,nc, h * w).view(bs,-1,h*w).transpose(1, 2)
+            q_trans = out["trans"].view(bs, nc * num_points, h * w).permute(0, 2, 1)
+            # q_trans = out["trans"].view(bs, num_points,nc, h * w).view(bs,-1,h*w).transpose(1, 2) 
             if not only_pred:
                 q_trans = q_trans.clone()
 
             # if two stages, we concatenate the q_trans, and replace all other
             if self.stage_two:
                 out = out["mvt2"]
-                q_trans2 = out["trans"].view(bs, num_points,nc, h * w).view(bs,-1,h*w).transpose(1, 2)
+                q_trans2 =out["trans"].view(bs, nc * num_points, h * w).permute(0, 2, 1)
                 if not only_pred:
                     q_trans2 = q_trans2.clone()
                 q_trans = torch.cat((q_trans, q_trans2), dim=2)
@@ -734,11 +735,11 @@ class RVTAgent:
         )
         
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
-            out, dims=(bs, self.num_local_point,nc, h, w)
+            out, dims=(bs, len(self.points_local),nc, h, w)
         ) #修改为适应多个heatmap预测的形式。
 
         action_trans = self.get_action_trans(
-            wpt_local, pts, out, dyn_cam_info, dims=(bs, self.num_local_point, nc,h, w)
+            wpt_local, pts, out, dyn_cam_info, dims=(bs, len(self.points_local), nc,h, w)
         ) #修改为适应多个heatmap预测的形式。
 
 
@@ -818,7 +819,7 @@ class RVTAgent:
         return return_out
 
 
-
+git
     def update_gembench(
         self,
         replay_sample: dict,
@@ -1178,14 +1179,14 @@ class RVTAgent:
         dims,
     ):
         bs,  num_point,nc,h, w = dims
-        assert num_point==self.num_local_point
+        assert num_point==len(self.points_local)
         wpt_img = self._net_mod.get_pt_loc_on_img(
             wpt_local,
             mvt1_or_mvt2=True,
             dyn_cam_info=dyn_cam_info,
             out=None
         )
-        assert wpt_img.shape[1] == self.num_local_point
+        assert wpt_img.shape[1] == len(self.points_local)
         if self.stage_two:
             wpt_img2 = self._net_mod.get_pt_loc_on_img(
                 wpt_local,
@@ -1193,7 +1194,7 @@ class RVTAgent:
                 dyn_cam_info=dyn_cam_info,
                 out=out,
             )
-            assert wpt_img2.shape[1] == self.num_local_point
+            assert wpt_img2.shape[1] == len(self.points_local)
 
             # (bs, N, 2 * num_img, 2)
             wpt_img = torch.cat((wpt_img, wpt_img2), dim=-2)

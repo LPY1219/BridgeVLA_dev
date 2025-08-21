@@ -30,7 +30,7 @@ def select_feat_from_hm(
     :param hm: size [nc, nw, h, w]
     :param pt_cam_wei:
         some predifined weight of size [nc, npt], it is used along with the
-        distance weights
+        distance weights  
     :return:
         tuple with the first element being the wighted average for each point
         according to the hm values. the size is [nc, npt, nw]. the second and
@@ -97,79 +97,6 @@ def select_feat_from_hm(
 
 
 
-def select_feat_from_hm_our(
-    pt_cam: torch.Tensor, hm: torch.Tensor, pt_cam_wei: Optional[torch.Tensor] = None
-) -> Tuple[torch.Tensor]:
-    """
-    :param pt_cam:
-        continuous location of point coordinates from where value needs to be
-        selected. it is of size [nc, npt, 2], locations in pytorch3d screen
-        notations
-    :param hm: size [nc, nw, h, w]
-    :param pt_cam_wei:
-        some predifined weight of size [nc, npt], it is used along with the
-        distance weights
-    :return:
-        tuple with the first element being the wighted average for each point
-        according to the hm values. the size is [nc, npt, nw]. the second and
-        third elements are intermediate values to be used while chaching
-    """
-    nc, nw, h, w = hm.shape
-    npt = pt_cam.shape[1]
-    if pt_cam_wei is None:
-        pt_cam_wei = torch.ones([nc, npt]).to(hm.device).to(hm.dtype)
-
-    # giving points outside the image zero weight
-    pt_cam_wei[pt_cam[:, :, 0] < 0] = 0
-    pt_cam_wei[pt_cam[:, :, 1] < 0] = 0
-    pt_cam_wei[pt_cam[:, :, 0] > (w - 1)] = 0
-    pt_cam_wei[pt_cam[:, :, 1] > (h - 1)] = 0
-
-    pt_cam = pt_cam.unsqueeze(2).repeat([1, 1, 4, 1])
-    # later used for calculating weight
-    pt_cam_con = pt_cam.detach().clone()
-
-    # getting discrete grid location of pts in the camera image space
-    pt_cam[:, :, 0, 0] = torch.floor(pt_cam[:, :, 0, 0])
-    pt_cam[:, :, 0, 1] = torch.floor(pt_cam[:, :, 0, 1])
-    pt_cam[:, :, 1, 0] = torch.floor(pt_cam[:, :, 1, 0])
-    pt_cam[:, :, 1, 1] = torch.ceil(pt_cam[:, :, 1, 1])
-    pt_cam[:, :, 2, 0] = torch.ceil(pt_cam[:, :, 2, 0])
-    pt_cam[:, :, 2, 1] = torch.floor(pt_cam[:, :, 2, 1])
-    pt_cam[:, :, 3, 0] = torch.ceil(pt_cam[:, :, 3, 0])
-    pt_cam[:, :, 3, 1] = torch.ceil(pt_cam[:, :, 3, 1])
-    pt_cam = pt_cam.long()  # [nc, npt, 4, 2]
-    # since we are taking modulo, points at the edge, i,e at h or w will be
-    # mapped to 0. this will make their distance from the continous location
-    # large and hence they won't matter. therefore we don't need an explicit
-    # step to remove such points
-    pt_cam[:, :, :, 0] = torch.fmod(pt_cam[:, :, :, 0], int(w))
-    pt_cam[:, :, :, 1] = torch.fmod(pt_cam[:, :, :, 1], int(h))
-    pt_cam[pt_cam < 0] = 0
-
-    # getting normalized weight for each discrete location for pt
-    # weight based on distance of point from the discrete location
-    # [nc, npt, 4]
-    pt_cam_dis = 1 / (torch.sqrt(torch.sum((pt_cam_con - pt_cam) ** 2, dim=-1)) + 1e-10)
-    pt_cam_wei = pt_cam_wei.unsqueeze(-1) * pt_cam_dis
-    _pt_cam_wei = torch.sum(pt_cam_wei, dim=-1, keepdim=True)
-    _pt_cam_wei[_pt_cam_wei == 0.0] = 1
-    # cached pt_cam_wei in select_feat_from_hm_cache
-    pt_cam_wei = pt_cam_wei / _pt_cam_wei  # [nc, npt, 4]
-
-    # transforming indices from 2D to 1D to use pytorch gather
-    hm = hm.permute(0, 2, 3, 1).view(nc, h * w, nw)  # [nc, h * w, nw]
-    pt_cam = pt_cam.view(nc, 4 * npt, 2)  # [nc, 4 * npt, 2]
-    # cached pt_cam in select_feat_from_hm_cache
-    pt_cam = (pt_cam[:, :, 1] * w) + pt_cam[:, :, 0]  # [nc, 4 * npt]
-    # [nc, 4 * npt, nw]
-    pt_cam_val = batched_index_select(hm, dim=1, index=pt_cam)
-    # tranforming back each discrete location of point
-    pt_cam_val = pt_cam_val.view(nc, npt, 4, nw)
-    # summing weighted contribution of each discrete location of a point
-    # [nc, npt, nw]
-    pt_cam_val = torch.sum(pt_cam_val * pt_cam_wei.unsqueeze(-1), dim=2)
-    return pt_cam_val, pt_cam, pt_cam_wei
 
 
 def select_feat_from_hm_cache(

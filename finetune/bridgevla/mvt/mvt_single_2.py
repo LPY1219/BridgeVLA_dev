@@ -180,13 +180,13 @@ class MVT(nn.Module):
                         self.num_img * feat_fc_dim, feat_out_size_ex_rot
                     ).to(torch.bfloat16)
 
-                self.feat_fc_init_bn = nn.BatchNorm1d(self.num_img * feat_fc_dim).to(torch.bfloat16)
-                self.feat_fc_pe = FixedPositionalEncoding(
-                    self.num_img * feat_fc_dim, feat_scale_factor=1
-                ).to(torch.bfloat16)
-                self.feat_fc_x = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
-                self.feat_fc_y = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
-                self.feat_fc_z = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
+                # self.feat_fc_init_bn = nn.BatchNorm1d(self.num_img * feat_fc_dim).to(torch.bfloat16)
+                # self.feat_fc_pe = FixedPositionalEncoding(
+                #     self.num_img * feat_fc_dim, feat_scale_factor=1
+                # ).to(torch.bfloat16)
+                # self.feat_fc_x = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
+                # self.feat_fc_y = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
+                # self.feat_fc_z = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
 
             else:
                 assert False
@@ -392,7 +392,7 @@ class MVT(nn.Module):
                 wpt_local,
                 dyn_cam_info=None,
             )
-            wpt_img = wpt_img.reshape(bs * self.num_local_point*self.num_img, 2)
+            # wpt_img = wpt_img.reshape(bs * self.num_local_point*self.num_img, 2)
 
             # add noise to wpt image while training
             if self.training:
@@ -402,14 +402,22 @@ class MVT(nn.Module):
                 wpt_img = torch.clamp(wpt_img, 0, self.img_size - 1)
 
             _wpt_img = wpt_img / self.img_patch_size
-            _u = x
+            _u = x# (12,2048,16,16)
             assert (
                 0 <= _wpt_img.min() and _wpt_img.max() <= x.shape[-1]
             ), print(_wpt_img, x.shape)
 
-            _wpt_img = _wpt_img.unsqueeze(1)
-            _feat = select_feat_from_hm(_wpt_img, _u)[0]
-            _feat = _feat.view(bs,self.num_local_point,self.num_img,-1)
+            _wpt_img=_wpt_img.transpose(1,2)#(bs,num_img,num_local_point,2)
+            _wpt_img=_wpt_img.reshape(bs*self.num_img,self.num_local_point,2)
+            _feat =select_feat_from_hm(_wpt_img,_u)[0] # 
+            
+            # _feat = []
+            # for i in range(self.num_local_point):
+            #     single_wpt_image=_wpt_img[:,i].reshape(bs * self.num_img, 2)
+            #     single_feat = select_feat_from_hm(single_wpt_image, _u)[0] 
+            #     _feat.append(single_feat)
+
+            # _feat = torch.stack(_feat, dim=1) # bs,num_local_point,num_img,2048
             #沿着self.num_local_point维度取平均
             _feat=torch.mean(_feat,dim=1)
             _feat=_feat.view(bs,-1)

@@ -16,6 +16,8 @@ import numpy as np
 
 def transform_points_batch(pc : torch.Tensor, inv_cam_poses : torch.Tensor):
     pc_h = torch.cat([pc, torch.ones_like(pc[:, 0:1])], dim=1)
+    # you modify
+    inv_cam_poses = inv_cam_poses.to(dtype=pc_h.dtype, device=pc_h.device)
     pc_cam_h = torch.einsum("bxy,ny->bnx", inv_cam_poses, pc_h)
     pc_cam = pc_cam_h[:, :, :3]
     return pc_cam
