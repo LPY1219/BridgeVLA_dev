@@ -429,7 +429,7 @@ class MVT(nn.Module):
                         pc, loc=wpt_local, sca=self.st_sca
                     )  # 先计算ground truth
                     # bad name!
-                    gt_stage_one_noisy =  rvt_utils.pose_estimate_from_correspondences_torch(ee_points_local, wpt_local)
+                    gt_stage_one_noisy =  None
 
                     # must pass None to mvt2 while in eval
                     wpt_local2 = None

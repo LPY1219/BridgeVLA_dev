@@ -480,36 +480,41 @@ class MVT(nn.Module):
         Estimate the q-values given output from mvt
         :param out: output from mvt
         """
+        pred_wpt_local = []
         nc = self.num_img
         h = w = self.img_size
         bs = out["trans"].shape[0]
+        for i in range(self.num_local_point):
+            q_trans = out["trans"][:,:,:,:,i].view(bs, nc, h * w)
+            hm = torch.nn.functional.softmax(q_trans, 2)
+            hm = hm.view(bs, nc, h, w)
 
-        q_trans = out["trans"].view(bs, nc, h * w)
-        hm = torch.nn.functional.softmax(q_trans, 2)
-        hm = hm.view(bs, nc, h, w)
+            if dyn_cam_info is None:
+                dyn_cam_info_itr = (None,) * bs
+            else:
+                dyn_cam_info_itr = dyn_cam_info
 
-        if dyn_cam_info is None:
-            dyn_cam_info_itr = (None,) * bs
-        else:
-            dyn_cam_info_itr = dyn_cam_info
+            pred_wpt = [
+                self.renderer.get_max_3d_frm_hm_cube(
+                    hm[i : i + 1],
+                    fix_cam=True,
+                    dyn_cam_info=dyn_cam_info_itr[i : i + 1]
+                    if not (dyn_cam_info_itr[i] is None)
+                    else None,
+                )
+                for i in range(bs)
+            ]
+            pred_wpt = torch.cat(pred_wpt, 0)
+            if self.use_point_renderer:
+                pred_wpt = pred_wpt.squeeze(1)
 
-        pred_wpt = [
-            self.renderer.get_max_3d_frm_hm_cube(
-                hm[i : i + 1],
-                fix_cam=True,
-                dyn_cam_info=dyn_cam_info_itr[i : i + 1]
-                if not (dyn_cam_info_itr[i] is None)
-                else None,
-            )
-            for i in range(bs)
-        ]
-        pred_wpt = torch.cat(pred_wpt, 0)
-        if self.use_point_renderer:
-            pred_wpt = pred_wpt.squeeze(1)
+            assert y_q is None
+            pred_wpt = pred_wpt.unsqueeze(1)#(bs,1,3)
+            pred_wpt_local.append(pred_wpt)
 
-        assert y_q is None
+        pred_wpt_local = torch.cat(pred_wpt_local, 1)
 
-        return pred_wpt
+        return pred_wpt_local
 
 
     def free_mem(self):

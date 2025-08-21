@@ -819,7 +819,6 @@ class RVTAgent:
         return return_out
 
 
-git
     def update_gembench(
         self,
         replay_sample: dict,
@@ -1064,14 +1063,15 @@ git
             img_feat=img_feat,
             img_aug=0,  # no img augmentation while acting
             language_goal=language_goal,
+            ee_points_local=self.points_local
         )
         if visualize:
             q_trans, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
-                out, dims=(bs, nc, h, w), only_pred=True, get_q_trans=True
+                out,dims=(bs, len(self.points_local),nc, h, w), only_pred=True, get_q_trans=True
             )
         else:
             _, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
-                out, dims=(bs, nc, h, w), only_pred=True, get_q_trans=False
+                out,dims=(bs, len(self.points_local),nc, h, w),only_pred=True, get_q_trans=False
             )            
         pred_wpt, pred_rot_quat, pred_grip, pred_coll = self.get_pred(
             out, rot_q, grip_q, collision_q, y_q, rev_trans, dyn_cam_info
@@ -1118,6 +1118,8 @@ git
 
 
 
+
+
     def get_pred(
         self,
         out,
@@ -1138,31 +1140,36 @@ git
             out, mvt1_or_mvt2, dyn_cam_info, y_q
         )
 
-        pred_wpt = []
+        pred_wpt_local_base = []
         for _pred_wpt_local, _rev_trans in zip(pred_wpt_local, rev_trans):
-            pred_wpt.append(_rev_trans(_pred_wpt_local))
-        pred_wpt = torch.cat([x.unsqueeze(0) for x in pred_wpt])
+            pred_wpt_local_base.append(_rev_trans(_pred_wpt_local))
+        pred_wpt_local_base = torch.cat([x.unsqueeze(0) for x in pred_wpt_local_base])
 
-        pred_rot = torch.cat(
-            (
-                rot_q[
-                    :,
-                    0 * self._num_rotation_classes : 1 * self._num_rotation_classes,
-                ].argmax(1, keepdim=True),
-                rot_q[
-                    :,
-                    1 * self._num_rotation_classes : 2 * self._num_rotation_classes,
-                ].argmax(1, keepdim=True),
-                rot_q[
-                    :,
-                    2 * self._num_rotation_classes : 3 * self._num_rotation_classes,
-                ].argmax(1, keepdim=True),
-            ),
-            dim=-1,
+        pred_wpt = self.rvt_utils.pose_estimate_from_correspondences_torch(
+            self.points_local, pred_wpt_local_base
         )
-        pred_rot_quat = aug_utils.discrete_euler_to_quaternion(
-            pred_rot.cpu(), self._rotation_resolution
-        )
+        # pred_rot = torch.cat(
+        #     (
+        #         rot_q[
+        #             :,
+        #             0 * self._num_rotation_classes : 1 * self._num_rotation_classes,
+        #         ].argmax(1, keepdim=True),
+        #         rot_q[
+        #             :,
+        #             1 * self._num_rotation_classes : 2 * self._num_rotation_classes,
+        #         ].argmax(1, keepdim=True),
+        #         rot_q[
+        #             :,
+        #             2 * self._num_rotation_classes : 3 * self._num_rotation_classes,
+        #         ].argmax(1, keepdim=True),
+        #     ),
+        #     dim=-1,
+        # )
+        # pred_rot_quat = aug_utils.discrete_euler_to_quaternion(
+        #     pred_rot.cpu(), self._rotation_resolution
+        # )
+
+
         pred_grip = grip_q.argmax(1, keepdim=True)
         pred_coll = collision_q.argmax(1, keepdim=True)
 
