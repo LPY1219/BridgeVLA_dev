@@ -19,6 +19,7 @@ cd /share/project/lpy/BridgeVLA/finetune/RLBench
 # DeepSpeed configuration
 GPUS_PER_NODE=8
 NNODES=1
+# DEEPSPEED_CONFIG="configs/deepspeed_config_simple_3.json"
 DEEPSPEED_CONFIG="configs/deepspeed_config_simple.json"
 
 # Launch with DeepSpeed

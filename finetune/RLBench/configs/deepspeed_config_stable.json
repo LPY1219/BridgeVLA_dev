@@ -12,11 +12,10 @@
         }
     },
     "scheduler": {
-        "type": "WarmupLR",
+        "type": "CosineAnnealingLR",
         "params": {
-            "warmup_min_lr": "auto",
-            "warmup_max_lr": "auto",
-            "warmup_num_steps": "auto"
+            "T_max": "auto",
+            "eta_min": 1e-6
         }
     },
     "zero_optimization": {

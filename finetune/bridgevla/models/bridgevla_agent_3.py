@@ -1218,7 +1218,9 @@ class RVTAgent:
             sigma=self.gt_hm_sigma,
             thres_sigma_times=3,
         )
-        action_trans = action_trans.view(bs, num_point,nc, h * w).view(bs,-1,h*w).transpose(1, 2).clone()
+        # action_trans = action_trans.view(bs, num_point,nc, h * w).view(bs,-1,h*w).transpose(1, 2).clone()
+        action_trans = action_trans.view(bs,-1,h*w).permute(0,2,1).clone()
+
 
         return action_trans
 

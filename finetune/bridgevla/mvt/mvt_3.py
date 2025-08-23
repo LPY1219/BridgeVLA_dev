@@ -287,13 +287,13 @@ class MVT(nn.Module):
 
 
         if not (wpt_local is None):
-            bs5, N, x6 = wpt_local_with_gt.shape
+            bs5, N, x6 = wpt_local.shape
             assert bs == bs5
             assert N==self.num_local_point
-            assert x6 == 3, "Does not support wpt_local_with_gt of shape {wpt_local_with_gt.shape}"
+            assert x6 == 3, "Does not support wpt_local_with_gt of shape {wpt_local.shape}"
 
         if self.training:
-            assert (not self.stage_two) or (not wpt_local_with_gt is None)
+            assert (not self.stage_two) or (not wpt_local is None)
 
     def forward(
         self,
