@@ -339,7 +339,7 @@ class MVT(nn.Module):
                 img_aug=img_aug,
                 mvt1_or_mvt2=True,
                 dyn_cam_info=None,
-            )
+            ) # visualize here
         if self.training:
             wpt_local_stage_one = wpt_local
             wpt_local_stage_one = wpt_local_stage_one.clone().detach()

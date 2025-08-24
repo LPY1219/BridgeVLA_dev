@@ -288,16 +288,28 @@ def R_to_quat_torch(R):
 
 def pose_apply_torch(points_local, poses_base):
     """
-    points_local: (N,3)
-    poses_base:   (B,7) [tx,ty,tz, qx,qy,qz,qw]
-    return:       (B,N,3)
+    points_local: (N,3) - 点在末端执行器局部坐标系中的坐标
+    poses_base:   (B,7) - 末端执行器在基坐标系中的位姿 [tx,ty,tz, qx,qy,qz,qw]
+    return:       (B,N,3) - 点在基坐标系中的坐标
     """
     P = torch.as_tensor(points_local)           # (N,3)
     poses = torch.as_tensor(poses_base)         # (B,7)
     t = poses[:, :3]                                                 # (B,3)
     q = poses[:, 3:]                                                 # (B,4)
     R = quat_to_R_torch(q)                                           # (B,3,3)
-    pts = torch.einsum('bij,nj->bin', R, P) + t[:, None, :]          # (B,N,3)
+
+
+    # 确保 P 的形状是 (B, N, 3)
+    P_ = P.unsqueeze(0).repeat(R.size(0), 1, 1)  # 复制 P 以匹配批量大小
+
+    # 进行批量矩阵乘法
+    pts_rot = torch.bmm(R, P_.permute(0, 2, 1))  # (B, 3, N)
+
+    # 转换为 (B, N, 3) 以匹配目标输出形状
+    pts_rot = pts_rot.permute(0, 2, 1)  # (B, N, 
+
+    # pts = torch.einsum('bij,nj->bin', R, P) + t[:, None, :]          # (B,N,3)
+    pts = pts_rot + t[:, None, :]          # (B,N,3)
     return pts
 
 # ---------- Kabsch（无尺度）----------

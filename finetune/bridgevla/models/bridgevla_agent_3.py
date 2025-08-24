@@ -455,10 +455,13 @@ class RVTAgent:
         self.num_all_rot = self._num_rotation_classes * 3
 
         # define three points to represent the pose
-        self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
-                                        [0.0, 0.1, 0.0],
-                                        [0.0, 0.0, 0.1]])
+        # self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
+        #                                 [0.0, 0.1, 0.0],
+        #                                 [0.0, 0.0, 0.1]])
 
+        self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
+                                        [0.0, 0.03, 0.0],
+                                        [0.0, 0.0, 0.03]])
     def build(self, training: bool, device: torch.device = None):
         self._training = training
         self._device = device
@@ -540,7 +543,7 @@ class RVTAgent:
         :return: tuple of trans_q, rot_q, grip_q and coll_q that is used for
             training and preduction
         """
-        bs, num_points,nc,h, w = dims
+        bs,nc,num_points,h, w = dims
         assert isinstance(only_pred, bool)
 
         if get_q_trans:
@@ -1187,14 +1190,14 @@ class RVTAgent:
         dyn_cam_info,
         dims,
     ):
-        bs,  num_point,nc,h, w = dims
+        bs,nc ,num_point,h, w = dims
         assert num_point==len(self.points_local)
         wpt_img = self._net_mod.get_pt_loc_on_img(
             wpt_local,
             mvt1_or_mvt2=True,
             dyn_cam_info=dyn_cam_info,
             out=None
-        )
+        )# bs,np,num_img,2
         assert wpt_img.shape[1] == len(self.points_local)
         if self.stage_two:
             wpt_img2 = self._net_mod.get_pt_loc_on_img(
@@ -1208,7 +1211,7 @@ class RVTAgent:
             # (bs, N, 2 * num_img, 2)
             wpt_img = torch.cat((wpt_img, wpt_img2), dim=-2)
             nc = nc * 2
-
+            wpt_img = wpt_img.permute(0,2,1,3) # (bs,2*num_img,N,2)  # 为了便于后面和q_trans的维度匹配
         # # (bs, num_img, 2)
         # wpt_img = wpt_img.squeeze(1)
 
@@ -1218,7 +1221,7 @@ class RVTAgent:
             sigma=self.gt_hm_sigma,
             thres_sigma_times=3,
         )
-        # action_trans = action_trans.view(bs, num_point,nc, h * w).view(bs,-1,h*w).transpose(1, 2).clone()
+        # 
         action_trans = action_trans.view(bs,-1,h*w).permute(0,2,1).clone()
 
 

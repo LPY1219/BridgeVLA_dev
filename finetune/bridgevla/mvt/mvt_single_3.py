@@ -370,12 +370,12 @@ class MVT(nn.Module):
             .view(
                 bs * self.num_img, self.vlm_dim, self.num_pat_img, self.num_pat_img
             )
-        )
+        )#(12,2048,16,16)
         # x=x.to(torch.float32)
         
-        trans = self.up0(x) # (3,224,224,3)
-        trans = trans.view(bs, self.num_img, h, w,self.num_local_point)
-
+        trans = self.up0(x) # (12,3,224,224)
+        # trans = trans.view(bs, self.num_img, h, w,self.num_local_point)
+        trans = trans.view(bs, self.num_img, self.num_local_point,h, w)
 
         if not forward_no_feat:
 

@@ -373,11 +373,11 @@ class DeepSpeedAgent:
         )
         
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.agent.get_q(
-            out, dims=(bs, len(self.agent.points_local),nc, h, w)
+            out, dims=(bs, nc,len(self.agent.points_local), h, w)
         )
 
         action_trans = self.agent.get_action_trans(
-           wpt_local, pts, out, dyn_cam_info, dims=(bs,len(self.agent.points_local), nc,h, w)
+           wpt_local, pts, out, dyn_cam_info, dims=(bs, nc,len(self.agent.points_local),h, w)
         )
 
         loss_log = {}
