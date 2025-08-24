@@ -425,11 +425,13 @@ class MVT(nn.Module):
                         out, y_q=None, mvt1_or_mvt2=True,
                         dyn_cam_info=None,
                     )# 根据多通道heatmap得到最终的wpt
+                    # 估算gt_stage_one_noisy
+                    gt_stage_one_noisy = rvt_utils.pose_estimate_from_correspondences_torch(
+                        points_local=ee_points_local*2, points_base_pred=wpt_local)[0][:,:3]# * 2在这里是hardcode，因为palce pc in cube中的scale是2
                     pc, rev_trans = mvt_utils.trans_pc(
-                        pc, loc=wpt_local, sca=self.st_sca
+                        pc, loc=gt_stage_one_noisy, sca=self.st_sca
                     )  # 先计算ground truth
                     # bad name!
-                    gt_stage_one_noisy =  None
 
                     # must pass None to mvt2 while in eval
                     wpt_local2 = None

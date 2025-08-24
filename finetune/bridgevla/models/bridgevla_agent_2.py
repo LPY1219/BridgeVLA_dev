@@ -1097,7 +1097,7 @@ class RVTAgent:
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),
-                pred_rot_quat[0],
+                pred_rot_quat[0].cpu().numpy(),
                 pred_grip[0].cpu().numpy(),
                 pred_coll[0].cpu().numpy(),
                 # [1.0],  # debug!!!!!!
@@ -1145,9 +1145,11 @@ class RVTAgent:
             pred_wpt_local_base.append(_rev_trans(_pred_wpt_local))
         pred_wpt_local_base = torch.cat([x.unsqueeze(0) for x in pred_wpt_local_base])
 
-        pred_wpt = self.rvt_utils.pose_estimate_from_correspondences_torch(
+        pred_pose,_ = rvt_utils.pose_estimate_from_correspondences_torch(
             self.points_local, pred_wpt_local_base
         )
+        pred_wpt = pred_pose[:,:3]
+        pred_rot_quat=pred_pose[:,3:]
         # pred_rot = torch.cat(
         #     (
         #         rot_q[
@@ -1173,7 +1175,7 @@ class RVTAgent:
         pred_grip = grip_q.argmax(1, keepdim=True)
         pred_coll = collision_q.argmax(1, keepdim=True)
 
-        return pred_wpt, pred_rot_quat, pred_grip, pred_coll
+        return pred_wpt ,  pred_rot_quat , pred_grip, pred_coll
 
 
     @torch.no_grad()

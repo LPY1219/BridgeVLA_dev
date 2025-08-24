@@ -324,6 +324,7 @@ def eval(
                 record_folder = os.path.join(log_dir, "videos")
             else:
                 record_folder = os.path.join(visualize_root_dir,task_name,"videos")
+            print(f"record_folder: {record_folder}")
             os.makedirs(record_folder, exist_ok=True)
             video_success_cnt = 0
             video_fail_cnt = 0
@@ -456,6 +457,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    print("whether save video: ", args.save_video)
     if args.log_name is None:
         args.log_name = "none"
 
