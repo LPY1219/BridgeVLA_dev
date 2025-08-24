@@ -455,10 +455,13 @@ class RVTAgent:
         self.num_all_rot = self._num_rotation_classes * 3
 
         # define three points to represent the pose
-        self.points_local=torch.tensor([[0.1, 0.0, 0.0],
-                                        [0.0, 0.1, 0.0],
-                                        [0.0, 0.0, 0.1]])
+        # self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
+        #                                 [0.0, 0.1, 0.0],
+        #                                 [0.0, 0.0, 0.1]])
 
+        self.points_local=torch.tensor([[0.03, 0.0, 0.0],  # 所以第一个点就是ground truth
+                                        [0.0, 0.03, 0.0],
+                                        [0.0, 0.0, 0.03]])
     def build(self, training: bool, device: torch.device = None):
         self._training = training
         self._device = device
@@ -540,7 +543,7 @@ class RVTAgent:
         :return: tuple of trans_q, rot_q, grip_q and coll_q that is used for
             training and preduction
         """
-        bs, num_points,nc,h, w = dims
+        bs,nc,num_points,h, w = dims
         assert isinstance(only_pred, bool)
 
         if get_q_trans:
@@ -595,6 +598,8 @@ class RVTAgent:
         backprop: bool = True,
         reset_log: bool = False,
     ) -> dict:
+
+        # 由于是用deepspeed训练，所以这个函数其实不会用到，只会用外层的update_deepspeed函数。
         assert replay_sample["rot_grip_action_indicies"].shape[1:] == (1, 4)
         assert replay_sample["ignore_collisions"].shape[1:] == (1, 1)
         assert replay_sample["gripper_pose"].shape[1:] == (1, 7)
@@ -817,6 +822,7 @@ class RVTAgent:
 
 
         return return_out
+
 
 
     def update_gembench(
@@ -1067,11 +1073,11 @@ class RVTAgent:
         )
         if visualize:
             q_trans, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
-                out,dims=(bs, len(self.points_local),nc, h, w), only_pred=True, get_q_trans=True
+                out,dims=(bs,nc, len(self.points_local), h, w), only_pred=True, get_q_trans=True
             )
         else:
             _, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
-                out,dims=(bs, len(self.points_local),nc, h, w),only_pred=True, get_q_trans=False
+                out,dims=(bs,nc, len(self.points_local), h, w),only_pred=True, get_q_trans=False
             )            
         pred_wpt, pred_rot_quat, pred_grip, pred_coll = self.get_pred(
             out, rot_q, grip_q, collision_q, y_q, rev_trans, dyn_cam_info
@@ -1097,7 +1103,7 @@ class RVTAgent:
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),
-                pred_rot_quat[0].cpu().numpy(),
+                pred_rot_quat[0],
                 pred_grip[0].cpu().numpy(),
                 pred_coll[0].cpu().numpy(),
                 # [1.0],  # debug!!!!!!
@@ -1148,8 +1154,9 @@ class RVTAgent:
         pred_pose,_ = rvt_utils.pose_estimate_from_correspondences_torch(
             self.points_local, pred_wpt_local_base
         )
+        # pred_pose=pred_wpt_local_base[:,0,:]
         pred_wpt = pred_pose[:,:3]
-        pred_rot_quat=pred_pose[:,3:]
+        pred_rot_quat=pred_pose[:,3:] # x y  z  w
         # pred_rot = torch.cat(
         #     (
         #         rot_q[
@@ -1175,7 +1182,7 @@ class RVTAgent:
         pred_grip = grip_q.argmax(1, keepdim=True)
         pred_coll = collision_q.argmax(1, keepdim=True)
 
-        return pred_wpt ,  pred_rot_quat , pred_grip, pred_coll
+        return pred_wpt, pred_rot_quat, pred_grip, pred_coll
 
 
     @torch.no_grad()
@@ -1187,14 +1194,14 @@ class RVTAgent:
         dyn_cam_info,
         dims,
     ):
-        bs,  num_point,nc,h, w = dims
+        bs,nc ,num_point,h, w = dims
         assert num_point==len(self.points_local)
         wpt_img = self._net_mod.get_pt_loc_on_img(
             wpt_local,
             mvt1_or_mvt2=True,
             dyn_cam_info=dyn_cam_info,
             out=None
-        )
+        )# bs,np,num_img,2
         assert wpt_img.shape[1] == len(self.points_local)
         if self.stage_two:
             wpt_img2 = self._net_mod.get_pt_loc_on_img(
@@ -1208,7 +1215,7 @@ class RVTAgent:
             # (bs, N, 2 * num_img, 2)
             wpt_img = torch.cat((wpt_img, wpt_img2), dim=-2)
             nc = nc * 2
-
+            wpt_img = wpt_img.permute(0,2,1,3) # (bs,2*num_img,N,2)  # 为了便于后面和q_trans的维度匹配
         # # (bs, num_img, 2)
         # wpt_img = wpt_img.squeeze(1)
 
@@ -1218,7 +1225,9 @@ class RVTAgent:
             sigma=self.gt_hm_sigma,
             thres_sigma_times=3,
         )
-        action_trans = action_trans.view(bs, num_point,nc, h * w).view(bs,-1,h*w).transpose(1, 2).clone()
+        # 
+        action_trans = action_trans.view(bs,-1,h*w).permute(0,2,1).clone()
+
 
         return action_trans
 

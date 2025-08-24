@@ -261,11 +261,11 @@ class MVT(nn.Module):
             assert img_aug == 0
             # assert rot_x_y is None, f"rot_x_y={rot_x_y}"
 
-        # if self.training:
-        #     assert (
-        #         (not self.feat_ver == 1)
-        #         or (not wpt_local_with_gt is None)
-        #     )
+        if self.training:
+            assert (
+                (not self.feat_ver == 1)
+                or (not wpt_local_with_gt is None)
+            )
 
             # if self.rot_ver == 0:
             #     assert rot_x_y is None, f"rot_x_y={rot_x_y}"
@@ -339,12 +339,12 @@ class MVT(nn.Module):
                 img_aug=img_aug,
                 mvt1_or_mvt2=True,
                 dyn_cam_info=None,
-            )
+            ) # visualize here
         if self.training:
             wpt_local_stage_one = wpt_local_with_gt[:,:-1,:]
-            gt_stage_one = wpt_local_with_gt[:,-1,:]
             wpt_local_stage_one = wpt_local_stage_one.clone().detach()
-            gt_stage_one = gt_stage_one.clone().detach()
+            gt_stage_one = wpt_local_with_gt[:,-1,:]
+            gt_stage_one = gt_stage_one.clone().detach() # 可能会有一些内存绑定
         else:
             wpt_local_stage_one = None 
             gt_stage_one = None

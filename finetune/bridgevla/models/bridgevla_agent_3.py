@@ -1157,10 +1157,6 @@ class RVTAgent:
         # pred_pose=pred_wpt_local_base[:,0,:]
         pred_wpt = pred_pose[:,:3]
         pred_rot_quat=pred_pose[:,3:] # x y  z  w
-        # 也可以直接选择第0 个点，
-
-    
-        
         # pred_rot = torch.cat(
         #     (
         #         rot_q[

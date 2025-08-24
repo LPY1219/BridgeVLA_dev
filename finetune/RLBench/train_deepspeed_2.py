@@ -370,17 +370,17 @@ class DeepSpeedAgent:
         )
         
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.agent.get_q(
-            out, dims=(bs, len(self.agent.points_local),nc, h, w)
+            out, dims=(bs, nc,len(self.agent.points_local), h, w)
         )
 
         action_trans = self.agent.get_action_trans(
-           wpt_local, pts, out, dyn_cam_info, dims=(bs,len(self.agent.points_local), nc,h, w)
+           wpt_local, pts, out, dyn_cam_info, dims=(bs, nc,len(self.agent.points_local),h, w)
         )
 
         loss_log = {}
         if backprop:
             # Cross-entropy loss
-            trans_loss = self.agent._cross_entropy_loss(q_trans, action_trans).mean()
+            trans_loss = self.agent._cross_entropy_loss(q_trans, action_trans).mean() # 仔细检查一下，到底是在哪一个维度上面去求mean。
             # rot_loss_x = rot_loss_y = rot_loss_z = 0.0
             grip_loss = 0.0
             collision_loss = 0.0

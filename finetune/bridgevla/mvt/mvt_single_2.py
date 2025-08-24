@@ -226,7 +226,6 @@ class MVT(nn.Module):
             model_id="/share/project/lxh/project/VLMs/paligemma-3b-pt-224"
         else:
             model_id="/data/lpy/huggingface/paligemma-3b-pt-224"
-        # model_id="/data/lpy/huggingface/paligemma-3b-pt-224"
         if load_pretrain:
             assert pretrain_path is not None
 
@@ -374,12 +373,11 @@ class MVT(nn.Module):
             .view(
                 bs * self.num_img, self.vlm_dim, self.num_pat_img, self.num_pat_img
             )
-        )
+        )#(12,2048,16,16)
         # x=x.to(torch.float32)
         
-        trans = self.up0(x) # (3,224,224,3)
-        trans = trans.view(bs, self.num_img, h, w,self.num_local_point)
-
+        trans = self.up0(x) # (12,3,224,224)
+        trans = trans.view(bs, self.num_img, self.num_local_point,h, w)
 
         if not forward_no_feat:
 
@@ -489,7 +487,8 @@ class MVT(nn.Module):
         h = w = self.img_size
         bs = out["trans"].shape[0]
         for i in range(self.num_local_point):
-            q_trans = out["trans"][:,:,:,:,i].view(bs, nc, h * w)
+
+            q_trans = out["trans"][:,:,i,:,:].view(bs, nc, h * w)
             hm = torch.nn.functional.softmax(q_trans, 2)
             hm = hm.view(bs, nc, h, w)
 
@@ -500,13 +499,13 @@ class MVT(nn.Module):
 
             pred_wpt = [
                 self.renderer.get_max_3d_frm_hm_cube(
-                    hm[i : i + 1],
+                    hm[j : j + 1],
                     fix_cam=True,
-                    dyn_cam_info=dyn_cam_info_itr[i : i + 1]
-                    if not (dyn_cam_info_itr[i] is None)
+                    dyn_cam_info=dyn_cam_info_itr[j : j + 1]
+                    if not (dyn_cam_info_itr[j] is None)
                     else None,
                 )
-                for i in range(bs)
+                for j in range(bs)
             ]
             pred_wpt = torch.cat(pred_wpt, 0)
             if self.use_point_renderer:
@@ -518,7 +517,7 @@ class MVT(nn.Module):
 
         pred_wpt_local = torch.cat(pred_wpt_local, 1)
 
-        return pred_wpt_local
+        return pred_wpt_local# bs, num_local_point, 3
 
 
     def free_mem(self):
