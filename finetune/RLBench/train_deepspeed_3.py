@@ -16,6 +16,7 @@ Therefore, the code is also under the NVIDIA Source Code License
 Author: Peiyan Li
 Email: peiyan.li@cripac.ia.ac.cn
 '''
+# 相较于V2来讲，就是将target pose作为了其中的一个local point
 import os
 import subprocess
 import time
@@ -31,10 +32,10 @@ import deepspeed
 import swanlab
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 import bridgevla.config as exp_cfg_mod
-import bridgevla.models.bridgevla_agent_2 as bridgevla_agent
+import bridgevla.models.bridgevla_agent_3 as bridgevla_agent
 import bridgevla.mvt.config as mvt_cfg_mod
 
-from bridgevla.mvt.mvt_2 import MVT
+from bridgevla.mvt.mvt_3 import MVT
 from utils.get_dataset import get_dataset
 from bridgevla.utils.rvt_utils import (
     get_num_feat,
@@ -260,7 +261,7 @@ class DeepSpeedAgent:
         import bridgevla.utils.rvt_utils as rvt_utils
         import bridgevla.mvt.utils as mvt_utils
         import bridgevla.mvt.aug_utils as aug_utils
-        from bridgevla.models.bridgevla_agent_2 import apply_se3_aug_con, manage_loss_log
+        from bridgevla.models.bridgevla_agent_3 import apply_se3_aug_con, manage_loss_log
 
         obs, pcd = rlbench_utils._preprocess_inputs(replay_sample, self.agent.cameras)
         
@@ -291,9 +292,10 @@ class DeepSpeedAgent:
             )
             # express local points in base frame
             new_action_gripper_pose=torch.cat([action_trans_con, action_rot], dim=-1)
-            action_trans_con=rvt_utils.pose_apply_torch(self.agent.points_local, new_action_gripper_pose) #(B,N,3)
-            action_trans_con_with_gt=torch.cat([action_trans_con, new_action_gripper_pose[:,:3].unsqueeze(1)], dim=1) # (B,N+1,3) # 会不会出现内存依赖的情况。
-            wpt = [x[:,:3] for x in action_trans_con_with_gt]  # 已经将多个点引入进来了，后面可能都得跟着修改
+            action_trans_con=rvt_utils.pose_apply_torch(self.agent.points_local, new_action_gripper_pose) #(B,N,3) # 其中一个肯定是原来的gripper pose
+            # action_trans_con_with_gt=torch.cat([action_trans_con, new_action_gripper_pose[:,:3].unsqueeze(1)], dim=1) # (B,N+1,3) # 会不会出现内存依赖的情况。
+            # wpt = [x[:,:3] for x in action_trans_con_with_gt]  # 已经将多个点引入进来了，后面可能都得跟着修改
+            wpt = [x[:,:3] for x in action_trans_con] 
 
             wpt_local = []
             rev_trans = []
@@ -308,8 +310,9 @@ class DeepSpeedAgent:
                 wpt_local.append(a)
                 rev_trans.append(b)
 
-            wpt_local_with_gt = torch.stack(wpt_local, dim=0) # B,N+1,3
-            wpt_local=wpt_local_with_gt[:,:-1,:] # B,N,3
+            # wpt_local_with_gt = torch.stack(wpt_local, dim=0) # B,N+1,3
+            # wpt_local=wpt_local_with_gt[:,:-1,:] # B,N,3
+            wpt_local = torch.stack(wpt_local, dim=0) # B,N,3 # 转换到以工作空间中心为原点的坐标系，且坐标统一*2
 
             pc = [
                 mvt_utils.place_pc_in_cube(
@@ -363,24 +366,24 @@ class DeepSpeedAgent:
             img_feat=img_feat,
             lang_emb=None,
             img_aug=img_aug,
-            wpt_local_with_gt=wpt_local_with_gt if self.deepspeed_engine.training else None,
+            wpt_local=wpt_local if self.deepspeed_engine.training else None,
             # rot_x_y=rot_x_y if self.agent.rot_ver == 1 else None,
             language_goal=replay_sample["lang_goal"],
             ee_points_local=self.agent.points_local,
         )
         
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.agent.get_q(
-            out, dims=(bs, len(self.agent.points_local),nc, h, w)
+            out, dims=(bs, nc,len(self.agent.points_local), h, w)
         )
 
         action_trans = self.agent.get_action_trans(
-           wpt_local, pts, out, dyn_cam_info, dims=(bs,len(self.agent.points_local), nc,h, w)
+           wpt_local, pts, out, dyn_cam_info, dims=(bs, nc,len(self.agent.points_local),h, w)
         )
 
         loss_log = {}
         if backprop:
             # Cross-entropy loss
-            trans_loss = self.agent._cross_entropy_loss(q_trans, action_trans).mean()
+            trans_loss = self.agent._cross_entropy_loss(q_trans, action_trans).mean() # 仔细检查一下，到底是在哪一个维度上面去求mean。
             # rot_loss_x = rot_loss_y = rot_loss_z = 0.0
             grip_loss = 0.0
             collision_loss = 0.0
