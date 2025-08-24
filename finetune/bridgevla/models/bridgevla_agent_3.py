@@ -824,6 +824,7 @@ class RVTAgent:
         return return_out
 
 
+
     def update_gembench(
         self,
         replay_sample: dict,
@@ -1072,11 +1073,11 @@ class RVTAgent:
         )
         if visualize:
             q_trans, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
-                out,dims=(bs, len(self.points_local),nc, h, w), only_pred=True, get_q_trans=True
+                out,dims=(bs,nc, len(self.points_local), h, w), only_pred=True, get_q_trans=True
             )
         else:
             _, rot_q, grip_q, collision_q, y_q, _ = self.get_q(
-                out,dims=(bs, len(self.points_local),nc, h, w),only_pred=True, get_q_trans=False
+                out,dims=(bs,nc, len(self.points_local), h, w),only_pred=True, get_q_trans=False
             )            
         pred_wpt, pred_rot_quat, pred_grip, pred_coll = self.get_pred(
             out, rot_q, grip_q, collision_q, y_q, rev_trans, dyn_cam_info
@@ -1150,9 +1151,16 @@ class RVTAgent:
             pred_wpt_local_base.append(_rev_trans(_pred_wpt_local))
         pred_wpt_local_base = torch.cat([x.unsqueeze(0) for x in pred_wpt_local_base])
 
-        pred_wpt = self.rvt_utils.pose_estimate_from_correspondences_torch(
+        pred_pose,_ = rvt_utils.pose_estimate_from_correspondences_torch(
             self.points_local, pred_wpt_local_base
         )
+        # pred_pose=pred_wpt_local_base[:,0,:]
+        pred_wpt = pred_pose[:,:3]
+        pred_rot_quat=pred_pose[:,3:] # x y  z  w
+        # 也可以直接选择第0 个点，
+
+    
+        
         # pred_rot = torch.cat(
         #     (
         #         rot_q[
