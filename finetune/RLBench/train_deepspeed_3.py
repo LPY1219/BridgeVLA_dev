@@ -529,10 +529,12 @@ def experiment(cmd_args):
         mvt_cfg.num_rot, exp_cfg.peract.num_rotation_classes
     )
 
+    num_local_point=20 # hardcode
     backbone = MVT(
         renderer_device=device_id,
         load_pretrain=cmd_args.load_pretrain,
         pretrain_path=cmd_args.pretrain_path,
+        num_local_point=num_local_point, # hardcode
         **mvt_cfg,
     )
 
@@ -547,6 +549,8 @@ def experiment(cmd_args):
         **exp_cfg.peract,
         **exp_cfg.rvt,
     )
+    assert num_local_point == len(agent.points_local), print(num_local_point, len(agent.points_local))
+    
 
     freeze_names = ["lm_head", "embed_tokens"]
     if cmd_args.freeze_vision_tower:
