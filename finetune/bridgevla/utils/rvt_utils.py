@@ -521,3 +521,6 @@ def compute_pose_errors_torch(poses_est, poses_gt):
     trans_err = torch.linalg.norm(t_est - t_gt, dim=-1)         # (B,)
 
     return {'rot_deg': rot_err, 'trans_l2': trans_err}
+
+if __name__ == "__main__":
+    pass

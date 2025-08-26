@@ -10,10 +10,10 @@ cd RLBench
 
 # Auto-convert DeepSpeed checkpoints if needed
 echo "Checking for DeepSpeed checkpoints that need conversion..."
-MODEL_FOLDER="/share/project/lpy/BridgeVLA/finetune/RLBench/logs/train/debug/debug_target_as_local_modify_action_gt_shape/08_24_09_48/"
+MODEL_FOLDER="/share/project/lpy/BridgeVLA/finetune/RLBench/logs/train/debug/20_local_points/08_25_18_16/"
 
 # You can specify the target epoch as the first argument, default to epoch 0
-TARGET_EPOCH=20
+TARGET_EPOCH=60
 
 if [ -d "$MODEL_FOLDER" ]; then
     echo "Running auto-conversion for epoch $TARGET_EPOCH in: $MODEL_FOLDER"
