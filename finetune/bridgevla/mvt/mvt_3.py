@@ -339,7 +339,7 @@ class MVT(nn.Module):
                 img_aug=img_aug,
                 mvt1_or_mvt2=True,
                 dyn_cam_info=None,
-            ) # visualize here
+            ) 
         if self.training:
             wpt_local_stage_one = wpt_local
             wpt_local_stage_one = wpt_local_stage_one.clone().detach()
@@ -395,7 +395,7 @@ class MVT(nn.Module):
                 print(f"Image saved to {save_path}")
             
             plt.show()
-        # visualize_tensor(img[0,:,3:6], save_path="/PATH_TO_SAVE_DIR/debug.png")
+        # visualize_tensor(img[0,:,3:6], save_path="/data/lpy/BridgeVLA_dev/debug/debug.png")
         if self.stage_two:
             with torch.no_grad():
                 # adding then noisy location for training
@@ -425,11 +425,18 @@ class MVT(nn.Module):
                         out, y_q=None, mvt1_or_mvt2=True,
                         dyn_cam_info=None,
                     )# 根据多通道heatmap得到最终的wpt
+                    # pc, rev_trans = mvt_utils.trans_pc(
+                    #     pc, loc=wpt_local[:,0,:], sca=self.st_sca
+                    # )  # 先计算ground truth
+                    # # bad name!
+                    # gt_stage_one_noisy = wpt_local[:,0,:]
+
+                    # 估算gt_stage_one_noisy
+                    gt_stage_one_noisy = rvt_utils.pose_estimate_from_correspondences_torch(
+                        points_local=ee_points_local*2, points_base_pred=wpt_local)[0][:,:3]# * 2在这里是hardcode，因为palce pc in cube中的scale是2
                     pc, rev_trans = mvt_utils.trans_pc(
-                        pc, loc=wpt_local[:,0,:], sca=self.st_sca
+                        pc, loc=gt_stage_one_noisy, sca=self.st_sca
                     )  # 先计算ground truth
-                    # bad name!
-                    gt_stage_one_noisy = wpt_local[:,0,:]
 
                     # must pass None to mvt2 while in eval
                     wpt_local2 = None

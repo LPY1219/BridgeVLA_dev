@@ -8,7 +8,7 @@ export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
 export DISPLAY=:1.0
 cd RLBench
 
-MODEL_FOLDER=/data/lpy/BridgeVLA_dev/finetune/RLBench/logs/ckpts/v2/8_24_debug
+MODEL_FOLDER=/data/lpy/BridgeVLA_dev/finetune/RLBench/logs/ckpts/v2/8_25/general_local
 TARGET_EPOCH=99
 # apt-get install libxcb-xinerama0
 # apt-get install libxcb1 libxcb-render0 libxcb-shm0
@@ -22,6 +22,6 @@ TARGET_EPOCH=99
 # pip uninstall -y opencv-python opencv-contrib-python
 # pip install  opencv-python-headless  
 # pip uninstall  -y opencv-python-headless      
-# pip install  opencxvfb-run --auto-servernum --server-args='-screen 0 1024x768x24 -ac'  python3 eval_3.py --model-folder $MODEL_FOLDER --eval-datafolder   /data/lpy/BridgeVLA_dev/finetune/data/RLBench/eval_data \
- --tasks "place_shape_in_shape_sorter"  --eval-episodes 10 --log-name "debug_new_rotation" --device 4 --headless --model-name "model_${TARGET_EPOCH}.pth"   $@ 
-v-python-headless   # in my machine , i have to repeat the installation process to avoid the error: "Could not find the Qt platform plugin 'xcb'"   
+# pip install  opencv-python-headless   # in my machine , i have to repeat the installation process to avoid the error: "Could not find the Qt platform plugin 'xcb'"   
+xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24 -ac'  python3 eval_2.py --model-folder $MODEL_FOLDER --eval-datafolder   /data/lpy/BridgeVLA_dev/finetune/data/RLBench/eval_data \
+ --tasks "place_shape_in_shape_sorter"  --eval-episodes 10 --log-name "debug_new_rotation_general_local" --device 4 --headless --model-name "model_${TARGET_EPOCH}.pth"   $@ 

@@ -26,6 +26,11 @@ import numpy as np
 from multiprocessing import Value
 from copy import deepcopy
 
+# Force Qt to use offscreen platform plugin for headless environments
+# os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# os.environ["QT_QPA_FONTDIR"] = "/usr/share/fonts"
+# os.environ["DISPLAY"] = ":1"
+
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 

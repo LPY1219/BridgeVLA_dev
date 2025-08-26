@@ -1103,7 +1103,7 @@ class RVTAgent:
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),
-                pred_rot_quat[0],
+                pred_rot_quat[0].cpu().numpy(),
                 pred_grip[0].cpu().numpy(),
                 pred_coll[0].cpu().numpy(),
                 # [1.0],  # debug!!!!!!
@@ -1157,6 +1157,12 @@ class RVTAgent:
         # pred_pose=pred_wpt_local_base[:,0,:]
         pred_wpt = pred_pose[:,:3]
         pred_rot_quat=pred_pose[:,3:] # x y  z  w
+        error=pred_wpt_local_base[0][0]-pred_wpt[0]
+        #求error的l2范数
+        error_l2=torch.linalg.norm(error)
+        print(" prediction error:")
+        print(error_l2)
+        
         # pred_rot = torch.cat(
         #     (
         #         rot_q[
