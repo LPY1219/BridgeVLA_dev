@@ -529,7 +529,7 @@ def experiment(cmd_args):
         mvt_cfg.num_rot, exp_cfg.peract.num_rotation_classes
     )
 
-    num_local_point=20 # hardcode
+    num_local_point=50 # hardcode
     backbone = MVT(
         renderer_device=device_id,
         load_pretrain=cmd_args.load_pretrain,
