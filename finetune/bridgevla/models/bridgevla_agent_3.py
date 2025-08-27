@@ -458,7 +458,29 @@ class RVTAgent:
         # self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
         #                                 [0.0, 0.1, 0.0],
         #                                 [0.0, 0.0, 0.1]])
-        # 我希望有50个点，这50个点的坐标互不相同，x y z 的数值大小都从 0.025，0.03，0.02.0.01.0 当中去选
+
+        # self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
+        #                                 [0.0, 0.03, 0.0],
+        #                                 [0.0, 0.0, 0.03],
+        #                                 [0.03, 0.0, 0.0],
+        #                                 [0.0, -0.03, 0.0],
+        #                                 [0.0, 0.0, -0.03],
+        #                                 [-0.03, 0.0, 0.0],
+        #                                 [0.0, 0.01, -0.02],
+        #                                 [-0.01, 0.02, 0.0],
+        #                                 [-0.02, 0.01, 0.0],
+        #                                 [0.01, -0.02, 0.0],
+        #                                 [0.02, -0.01, 0.0],
+        #                                 [-0.01, 0.0, 0.02],
+        #                                 [0.0, -0.01, 0.02],
+        #                                 [0.01, 0.0, -0.02],
+        #                                 [0.0, 0.01, 0.02],
+        #                                 [-0.01, 0.0, -0.02],
+        #                                 [0.01, 0.0, 0.02],
+        #                                 [0.04, 0.0, 0.0],
+        #                                 [-0.04, 0.0, 0.0],
+        #                                 ])
+
         self.points_local=torch.tensor([[0.0, 0.0, 0.0],  # 所以第一个点就是ground truth
                                         [0.0, 0.025, 0.0],
                                         [0.0, 0.0, 0.025],
@@ -1152,7 +1174,7 @@ class RVTAgent:
         continuous_action = np.concatenate(
             (
                 pred_wpt[0].cpu().numpy(),
-                pred_rot_quat[0],
+                pred_rot_quat[0].cpu().numpy(),
                 pred_grip[0].cpu().numpy(),
                 pred_coll[0].cpu().numpy(),
                 # [1.0],  # debug!!!!!!
@@ -1201,11 +1223,22 @@ class RVTAgent:
         pred_wpt_local_base = torch.cat([x.unsqueeze(0) for x in pred_wpt_local_base])
 
         pred_pose,_ = rvt_utils.pose_estimate_from_correspondences_torch(
-            self.points_local, pred_wpt_local_base
+            self.points_local, pred_wpt_local_base,use_ransac=True
         )
+        pred_pose=pred_pose.to(pred_wpt_local_base.device)
         # pred_pose=pred_wpt_local_base[:,0,:]
         pred_wpt = pred_pose[:,:3]
         pred_rot_quat=pred_pose[:,3:] # x y  z  w
+        error=pred_wpt_local_base[0][0]-pred_wpt[0]
+
+        # 求error的l2范数
+        error_l2=torch.linalg.norm(error)
+        print(" prediction error:")
+        print(error_l2)
+
+        #采用0号的位置，估计的旋转
+        # pred_wpt=pred_wpt_local_base[:,0,:3]
+        
         # pred_rot = torch.cat(
         #     (
         #         rot_q[

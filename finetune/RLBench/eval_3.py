@@ -26,6 +26,11 @@ import numpy as np
 from multiprocessing import Value
 from copy import deepcopy
 
+# Force Qt to use offscreen platform plugin for headless environments
+# os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# os.environ["QT_QPA_FONTDIR"] = "/usr/share/fonts"
+# os.environ["DISPLAY"] = ":1"
+
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 
@@ -104,8 +109,10 @@ def load_agent(
         exp_cfg.rvt.place_with_mean = old_place_with_mean
         exp_cfg.freeze()
 
+    num_local_point=50
     rvt = MVT(
         renderer_device=device,
+        num_local_point=num_local_point,
         **mvt_cfg,
     )
 
@@ -120,6 +127,7 @@ def load_agent(
         **exp_cfg.peract,
         **exp_cfg.rvt,
     )
+    assert num_local_point==agent.points_local.shape[0]
 
 
     agent.build(training=False, device=device)

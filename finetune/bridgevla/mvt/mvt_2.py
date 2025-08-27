@@ -431,7 +431,6 @@ class MVT(nn.Module):
                     pc, rev_trans = mvt_utils.trans_pc(
                         pc, loc=gt_stage_one_noisy, sca=self.st_sca
                     )  # 先计算ground truth
-                    # bad name!
 
                     # must pass None to mvt2 while in eval
                     wpt_local2 = None

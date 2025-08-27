@@ -122,10 +122,10 @@ def get_eval_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-         "--tasks", type=str, nargs="+", default=["all"]
+         "--tasks", type=str, nargs="+", default=["place_shape_in_shape_sorter"] #default=["all"]
     )
-    parser.add_argument("--model-folder", type=str,default="")
-    parser.add_argument("--eval-datafolder", type=str,default="")
+    parser.add_argument("--model-folder", type=str,default="/data/lpy/BridgeVLA_dev/finetune/RLBench/logs/ckpts/v2/8_24_debug")
+    parser.add_argument("--eval-datafolder", type=str,default="/data/lpy/BridgeVLA_dev/finetune/data/RLBench/eval_data")
     parser.add_argument("--visualize_root_dir", type=str,default="")
     parser.add_argument(
         "--start-episode",
@@ -151,7 +151,7 @@ def get_eval_parser():
     parser.add_argument("--mvt_cfg_path", type=str, default=None)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--log-name", type=str, default="test/1")
-    parser.add_argument("--model-name", type=str, default="model_80.pth")
+    parser.add_argument("--model-name", type=str, default="model_99.pth")
     parser.add_argument("--use-input-place-with-mean", action="store_true")
     parser.add_argument("--save-video", action="store_true")
     parser.add_argument("--skip", action="store_true")
@@ -409,7 +409,7 @@ def pose_estimate_from_correspondences_torch(
 
     for b in range(B):
         P = P_all
-        Q = Q_all[b]                                              # (N,3)
+        Q = Q_all[b]  # (N,3)
 
         if N < 3:
             # 退化：直接全体 Kabsch
