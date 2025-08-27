@@ -510,6 +510,7 @@ class RVTAgent:
                                         [0.025, 0.025, -0.025],
                                         [0.025, -0.025, 0.025],
                                         ])
+   
     def build(self, training: bool, device: torch.device = None):
         self._training = training
         self._device = device
