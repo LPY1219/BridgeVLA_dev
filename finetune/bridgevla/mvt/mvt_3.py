@@ -433,7 +433,11 @@ class MVT(nn.Module):
 
                     # 估算gt_stage_one_noisy
                     gt_stage_one_noisy = rvt_utils.pose_estimate_from_correspondences_torch(
-                        points_local=ee_points_local*2, points_base_pred=wpt_local)[0][:,:3]# * 2在这里是hardcode，因为palce pc in cube中的scale是2
+                        points_local=ee_points_local*2, points_base_pred=wpt_local,use_ransac=True)[0][:,:3]# * 2在这里是hardcode，因为palce pc in cube中的scale是2
+                    
+                    # print("pc device:",pc[0].device)
+                    # print("gt_stage_one_noisy device:",gt_stage_one_noisy.device)
+                    gt_stage_one_noisy=gt_stage_one_noisy.to(pc[0].device)
                     pc, rev_trans = mvt_utils.trans_pc(
                         pc, loc=gt_stage_one_noisy, sca=self.st_sca
                     )  # 先计算ground truth

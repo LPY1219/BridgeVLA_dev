@@ -409,7 +409,7 @@ def pose_estimate_from_correspondences_torch(
 
     for b in range(B):
         P = P_all
-        Q = Q_all[b]                                              # (N,3)
+        Q = Q_all[b]  # (N,3)
 
         if N < 3:
             # 退化：直接全体 Kabsch

@@ -109,8 +109,10 @@ def load_agent(
         exp_cfg.rvt.place_with_mean = old_place_with_mean
         exp_cfg.freeze()
 
+    num_local_point=20
     rvt = MVT(
         renderer_device=device,
+        num_local_point=20,
         **mvt_cfg,
     )
 
@@ -125,6 +127,7 @@ def load_agent(
         **exp_cfg.peract,
         **exp_cfg.rvt,
     )
+    assert num_local_point==agent.points_local.shape[0]
 
 
     agent.build(training=False, device=device)
