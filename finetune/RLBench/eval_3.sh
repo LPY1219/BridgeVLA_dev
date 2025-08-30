@@ -24,4 +24,4 @@ TARGET_EPOCH=99
 # pip uninstall  -y opencv-python-headless      
 # pip install  opencv-python-headless   # in my machine , i have to repeat the installation process to avoid the error: "Could not find the Qt platform plugin 'xcb'"   
 xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24 -ac'  python3 eval_3.py --model-folder $MODEL_FOLDER --eval-datafolder   /data/lpy/BridgeVLA_dev/finetune/data/RLBench/eval_data \
- --tasks "place_shape_in_shape_sorter"  --eval-episodes 25 --log-name "debug__real_allprediction" --device 5 --headless --model-name "model_${TARGET_EPOCH}.pth"   --save-video
+ --tasks "place_shape_in_shape_sorter"  --eval-episodes 25 --log-name "debug_all_prediction_thres01_early" --device 4 --headless --model-name "model_${TARGET_EPOCH}.pth"   --save-video
