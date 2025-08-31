@@ -67,6 +67,9 @@ data/
 *.tar.xz
 *.tar.gz
 *.zip
+finetune/Real/data
+finetune/Real/logs
+finetune/Real/swanlog
 
 # CoppeliaSim
 CoppeliaSim_*/
@@ -78,3 +81,5 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+swanlog/
+wandb/

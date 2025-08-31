@@ -63,28 +63,28 @@ class MVT(nn.Module):
         pretrain_path=None,
     ):
         super().__init__()
-        self.depth = depth
-        self.img_feat_dim = img_feat_dim
-        self.img_size = img_size
-        self.im_channels = im_channels
-        self.img_patch_size = img_patch_size
-        self.final_dim = final_dim
-        self.decoder_dropout = decoder_dropout
-        self.self_cross_ver = self_cross_ver
-        self.add_corr = add_corr
-        self.norm_corr = norm_corr
-        self.add_pixel_loc = add_pixel_loc
-        self.add_depth = add_depth
-        self.pe_fix = pe_fix
-        self.feat_ver = feat_ver
-        self.wpt_img_aug = wpt_img_aug
-        self.inp_pre_pro = inp_pre_pro
-        self.inp_pre_con = inp_pre_con
-        self.cvx_up = cvx_up
-        self.use_point_renderer = use_point_renderer
-        self.rot_ver = rot_ver
-        self.num_rot = num_rot
-        self.no_feat = no_feat
+        self.depth = depth # 深度
+        self.img_feat_dim = img_feat_dim # 图像特征维度
+        self.img_size = img_size # 图像大小
+        self.im_channels = im_channels # 图像通道数
+        self.img_patch_size = img_patch_size # 图像patch大小
+        self.final_dim = final_dim # 最终维度
+        self.decoder_dropout = decoder_dropout # 解码器dropout
+        self.self_cross_ver = self_cross_ver # 自交叉ver
+        self.add_corr = add_corr # 是否添加相关特征
+        self.norm_corr = norm_corr # 是否归一化相关特征
+        self.add_pixel_loc = add_pixel_loc # 是否添加像素位置编码
+        self.add_depth = add_depth # 是否添加深度信息
+        self.pe_fix = pe_fix # 是否固定位置编码
+        self.feat_ver = feat_ver # 特征版本
+        self.wpt_img_aug = wpt_img_aug # 路径点图像增强
+        self.inp_pre_pro = inp_pre_pro # 输入预处理
+        self.inp_pre_con = inp_pre_con # 输入预处理
+        self.cvx_up = cvx_up # 是否使用凸上采样
+        self.use_point_renderer = use_point_renderer # 使用点渲染器
+        self.rot_ver = rot_ver # 旋转版本
+        self.num_rot = num_rot # 旋转数量
+        self.no_feat = no_feat 
 
         if self.cvx_up:
             assert not self.inp_pre_con, (
@@ -96,38 +96,38 @@ class MVT(nn.Module):
         print(f"MVT Vars: {vars(self)}")
 
         assert not renderer is None
-        self.renderer = renderer
-        self.num_img = self.renderer.num_img
+        self.renderer = renderer # 渲染器
+        self.num_img = self.renderer.num_img # 渲染的不同视角图像数量
         # Modify it to adapt to vlm. 16**2 is the number of patches in the image
         self.num_pat_img = 16  
 
-        inp_img_feat_dim = self.img_feat_dim
+        inp_img_feat_dim = self.img_feat_dim # 基础图像特征维度
         if self.add_corr:
-            inp_img_feat_dim += 3
+            inp_img_feat_dim += 3 # 添加相关特征
         if self.add_pixel_loc:
-            inp_img_feat_dim += 3
+            inp_img_feat_dim += 3 # 添加像素位置编码
             self.pixel_loc = torch.zeros(
-                (self.num_img, 3, self.img_size, self.img_size)
+                (self.num_img, 3, self.img_size, self.img_size) # 
             )
-            self.pixel_loc[:, 0, :, :] = (
-                torch.linspace(-1, 1, self.num_img).unsqueeze(-1).unsqueeze(-1)
+            self.pixel_loc[:, 0, :, :] = ( # [num_img, H, W]
+                torch.linspace(-1, 1, self.num_img).unsqueeze(-1).unsqueeze(-1) # shape [3,1,1]
             )
-            self.pixel_loc[:, 1, :, :] = (
-                torch.linspace(-1, 1, self.img_size).unsqueeze(0).unsqueeze(-1)
+            self.pixel_loc[:, 1, :, :] = ( # [num_img, H, W]
+                torch.linspace(-1, 1, self.img_size).unsqueeze(0).unsqueeze(-1) # shape [1, H, 1]
             )
-            self.pixel_loc[:, 2, :, :] = (
-                torch.linspace(-1, 1, self.img_size).unsqueeze(0).unsqueeze(0)
+            self.pixel_loc[:, 2, :, :] = ( # [num_img, H, W]
+                torch.linspace(-1, 1, self.img_size).unsqueeze(0).unsqueeze(0) # shape [1, 1, W]
             )
         if self.add_depth:
-            inp_img_feat_dim += 1
+            inp_img_feat_dim += 1 # 添加深度信息编码
 
 
         # Hardcoded for vlm
-        self.vlm_dim=2048  
-
+        self.vlm_dim=2048  # 2048是vlm的特征维度
+        # 凸上采样，根据模型输出特征采样热图
         self.up0 = ConvexUpSample(
             in_dim=self.vlm_dim,
-            out_dim=1,
+            out_dim=1, # 输出维度为1
             up_ratio=self.img_patch_size,
         )
         # Ensure up0 uses the same dtype as the main model
@@ -136,13 +136,13 @@ class MVT(nn.Module):
         if not self.no_feat:
             feat_fc_dim = 0
             feat_fc_dim += self.vlm_dim
-            # Because we will concatenate the max-pooled image tokens and the image tokens corresponding to the waypoint later.
+            # 因为之后要拼接最大池化的图像token和与路径点对应的图像token
             if self.cvx_up:
                 feat_fc_dim += self.vlm_dim
             else:
                 feat_fc_dim += self.final_dim
             
-
+            # 获取特征全连接层
             def get_feat_fc(
                 _feat_in_size,
                 _feat_out_size,
@@ -165,14 +165,15 @@ class MVT(nn.Module):
 
             feat_out_size = feat_dim
 
-            if self.rot_ver == 0:
+            if self.rot_ver == 0: # 特征表示为一个220维度的向量
                 self.feat_fc = get_feat_fc(
                     self.num_img * feat_fc_dim,
                     feat_out_size,
                 ).to(torch.bfloat16)
-            elif self.rot_ver == 1:
+            elif self.rot_ver == 1: # 显式地旋转处理
                 assert self.num_rot * 3 <= feat_out_size
                 feat_out_size_ex_rot = feat_out_size - (self.num_rot * 3)
+                # 非旋转特征处理
                 if feat_out_size_ex_rot > 0:
                     self.feat_fc_ex_rot = get_feat_fc(
                         self.num_img * feat_fc_dim, feat_out_size_ex_rot
@@ -182,6 +183,7 @@ class MVT(nn.Module):
                 self.feat_fc_pe = FixedPositionalEncoding(
                     self.num_img * feat_fc_dim, feat_scale_factor=1
                 ).to(torch.bfloat16)
+                # 分别生成三个全连接层，生成x、y、z方向的旋转角度
                 self.feat_fc_x = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
                 self.feat_fc_y = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
                 self.feat_fc_z = get_feat_fc(self.num_img * feat_fc_dim, self.num_rot).to(torch.bfloat16)
@@ -195,7 +197,7 @@ class MVT(nn.Module):
             from point_renderer.rvt_ops import select_feat_from_hm
         else:
             from bridgevla.mvt.renderer import select_feat_from_hm
-
+        # 加载Paligemma
         from transformers import (
             PaliGemmaProcessor,
             PaliGemmaForConditionalGeneration,
@@ -230,7 +232,7 @@ class MVT(nn.Module):
             print("The pretrained path is:",pretrained_dir)
             all_params = load_all_params(pretrained_dir)
 
-            # Separate the base model parameters (assuming the original model parameter names do not contain "up0")
+            # 分离基础模型参数(不包含凸上采样)
             base_params = {k: v for k, v in all_params.items() if not k.startswith("up0.")}
 
             # Separate the custom layer parameters
@@ -257,8 +259,7 @@ class MVT(nn.Module):
 
     def get_pt_loc_on_img(self, pt, dyn_cam_info):
         """
-        Transform location of points in the local frame to location on the
-        image
+        将局部坐标系下的路径点坐标转换为图像坐标系下的坐标
         :param pt: (bs, np, 3)
         :return: pt_img of size (bs, np, num_img, 2)
         """
@@ -341,7 +342,7 @@ class MVT(nn.Module):
             current_ids = model_inputs["attention_mask"][i]
             current_output = x[i]
             
-            # Extract tokens corresponding to non-zero ids
+            # 提取非0token的indicies
             non_zero_indices = torch.nonzero(current_ids != 0, as_tuple=True)[0]  # Find the indices of non-zero ids
             non_zero_output = current_output[non_zero_indices]  # Extract the token outputs corresponding to these non-zero ids
             
