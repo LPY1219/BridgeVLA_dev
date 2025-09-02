@@ -36,9 +36,9 @@ def read_action_file(action_dir_path):
             # rx, ry, rz = r.as_euler("xyz", degrees=False)
             # orientation = [rx, ry, rz]
             # 输出四元数
-            orientation = q
+            orientation = q # w x y z
 
-            # 夹爪状态 0 表示打开 1 表示闭合
+            # 夹爪状态 1 表示打开 0 表示闭合
             gripper_state = float(action[7])
 
             entry = {
@@ -164,6 +164,7 @@ class Real_Dataset(Dataset):
                         #! next pose action
                         gripper_pose_xyz = gripper_pose[step + 1]["position"]
                         gripper_pose_quat = gripper_pose[step + 1]["orientation"] # wxyz
+                        #! w x y z -> x y z w
                         gripper_pose_quat = np.array([gripper_pose_quat[1], gripper_pose_quat[2], gripper_pose_quat[3], gripper_pose_quat[0]]).astype(np.float32)  # wxyz -> xyzw
 
                         sample["gripper_pose"] = np.concatenate(
@@ -319,6 +320,11 @@ def is_bgr_image(arr):
 
 
 if __name__ == "__main__":
+    # gripper_pose: x y z qx qy qz qw state
+    # 3rd rgb: (C,H,W) RGB
+    # 3rd pcd: (C,H,W) XYZ
+    # lang_goal: str
+    # tasks: str
     dataset = Real_Dataset(
         data_path="/home/lpy/BridgeVLA_dev/finetune/Real/data",
         device="cuda:4",

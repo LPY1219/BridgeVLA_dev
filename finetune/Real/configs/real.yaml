@@ -3,7 +3,7 @@ exp_id: rvt2_vlm
 tasks: all
 bs: 4
 num_workers: 4
-epochs: 500
+epochs: 300
 train_iter: 16000
 sample_distribution_mode: task_uniform
 use_scheduler: false

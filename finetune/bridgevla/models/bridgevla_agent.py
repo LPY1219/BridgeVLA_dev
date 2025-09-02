@@ -1156,7 +1156,7 @@ class RVTAgent:
             rot_x_y=rot_x_y if self.rot_ver == 1 else None,
             language_goal=replay_sample["language_goal"]
         )
-        mvt1_img = out['mvt1_ori_img'][0,:,3:6]
+        # mvt1_img = out['mvt1_ori_img'][0,:,3:6]
         
         q_trans, rot_q, grip_q, collision_q, y_q, pts = self.get_q(
             out, dims=(bs, nc, h, w)
