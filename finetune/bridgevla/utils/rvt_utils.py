@@ -2,7 +2,7 @@
 import pdb
 import argparse
 import sys
-
+import math
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -367,23 +367,133 @@ def kabsch_from_corresp_torch(points_local, points_base_pred):
 
 # ---------- RANSAC + Kabsch ----------
 
+# def pose_estimate_from_correspondences_torch(
+#     points_local, points_base_pred,
+#     use_ransac: bool = False,
+#     ransac_iters: int = 1000,
+#     ransac_thresh: float = 0.003,
+#     min_inliers: int = 3,
+#     random_seed: int | None = None
+# ):
+#     """
+#     估计位姿（刚体，无尺度）。支持 RANSAC。
+#     points_local:     (N,3) 末端系下原始点
+#     points_base_pred: (B,N,3) 这些点在基坐标系下的对应/预测
+#     use_ransac:       是否启用 RANSAC
+#     ransac_iters:     迭代次数
+#     ransac_thresh:    内点阈值（以欧氏残差计，和数据单位一致）
+#     min_inliers:      至少内点数（>=3）
+#     random_seed:      随机种子
+#     return:
+#         poses:        (B,7)  [t, qx,qy,qz,qw]
+#         inlier_masks: (B,N)  bool，若 use_ransac=False 则全 True
+#     """
+#     P_all = torch.as_tensor(points_local)      # (N,3)
+#     Q_all = torch.as_tensor(points_base_pred)  # (B,N,3)
+#     B, N, _ = Q_all.shape
+#     assert P_all.shape == (N,3), "points_local must be (N,3) and match Q's N"
+
+#     if not use_ransac:
+#         poses, _, _ = kabsch_from_corresp_torch(P_all, Q_all)
+#         inliers = torch.ones((B, N), dtype=torch.bool)
+#         return poses, inliers
+
+#     if random_seed is not None:
+#         g = torch.Generator()
+#         g.manual_seed(random_seed)
+#     else:
+#         g = None
+
+#     poses_out = torch.zeros((B,7))
+#     inlier_masks = torch.zeros((B,N), dtype=torch.bool)
+
+#     for b in range(B):
+#         P = P_all
+#         Q = Q_all[b]  # (N,3)
+
+#         if N < 3:
+#             # 退化：直接全体 Kabsch
+#             Rb, tb = _kabsch_single(P, Q)
+#             qb = R_to_quat_torch(Rb[None])[0]
+#             poses_out[b, :3] = tb
+#             poses_out[b, 3:] = qb
+#             inlier_masks[b] = True
+#             continue
+
+#         best_inliers = None
+#         best_count = -1
+#         best_R, best_t = None, None
+
+#         for _ in range(ransac_iters):
+#             # 随机取 3 个索引（最小集）
+#             idx = torch.randperm(N, generator=g)[:3]
+#             Ps = P[idx]                                          # (3,3)
+#             Qs = Q[idx]                                          # (3,3)
+
+#             # 检测退化：三点是否近乎共线
+#             v1 = Ps[1] - Ps[0]
+#             v2 = Ps[2] - Ps[0]
+#             area = torch.linalg.norm(torch.cross(v1, v2)) / 2.0
+#             if area < 1e-9:
+#                 continue
+
+#             # 用三点估计临时 R,t
+#             R_tmp, t_tmp = _kabsch_single(Ps, Qs)
+
+#             # 计算全体残差并判内点
+#             resid = torch.linalg.norm((P @ R_tmp.t()) + t_tmp - Q, dim=-1)  # (N,)
+#             inliers = resid <= ransac_thresh
+#             num_inliers = int(inliers.sum().item())
+
+#             if num_inliers >= min_inliers and num_inliers > best_count:
+#                 best_count = num_inliers
+#                 best_inliers = inliers
+#                 # 用当前内点重新拟合
+#                 R_refit, t_refit = _kabsch_single(P[best_inliers], Q[best_inliers])
+#                 best_R, best_t = R_refit, t_refit
+
+#         # 若没有找到足够内点，退化为全体 Kabsch
+#         if best_inliers is None or best_count < 3:
+#             Rb, tb = _kabsch_single(P, Q)
+#             inliers = torch.ones(N, dtype=torch.bool)
+#         else:
+#             Rb, tb = best_R, best_t
+#             inliers = best_inliers
+
+#         qb = R_to_quat_torch(Rb[None])[0]
+#         poses_out[b, :3] = tb
+#         poses_out[b, 3:] = qb
+#         inlier_masks[b] = inliers
+#         print("number of inliers: ", best_count)
+
+#     return poses_out, inlier_masks
+
+
+
 def pose_estimate_from_correspondences_torch(
     points_local, points_base_pred,
     use_ransac: bool = False,
     ransac_iters: int = 1000,
     ransac_thresh: float = 0.01,
     min_inliers: int = 3,
-    random_seed: int | None = None
+    random_seed: int | None = None,
+    # ↓ 新增参数：RANSAC 早停
+    ransac_confidence: float = 0.99,      # 自适应早停：达到该置信度就可停止
+    early_stop_patience: int | None = None, # 可选：若连续若干轮无改进则停止
+    print_debug: bool = False
 ):
     """
-    估计位姿（刚体，无尺度）。支持 RANSAC。
+    估计位姿（刚体，无尺度）。支持 RANSAC + 早停。
     points_local:     (N,3) 末端系下原始点
     points_base_pred: (B,N,3) 这些点在基坐标系下的对应/预测
     use_ransac:       是否启用 RANSAC
-    ransac_iters:     迭代次数
-    ransac_thresh:    内点阈值（以欧氏残差计，和数据单位一致）
+    ransac_iters:     迭代上限（硬上限）
+    ransac_thresh:    内点阈值（欧氏残差）
     min_inliers:      至少内点数（>=3）
     random_seed:      随机种子
+    ransac_confidence:自适应早停置信度 p，基于 N >= log(1-p)/log(1-w^s)
+    early_stop_patience:（可选）无提升的最大容忍轮次
+    print_debug:      打印调试信息
     return:
         poses:        (B,7)  [t, qx,qy,qz,qw]
         inlier_masks: (B,N)  bool，若 use_ransac=False 则全 True
@@ -395,21 +505,24 @@ def pose_estimate_from_correspondences_torch(
 
     if not use_ransac:
         poses, _, _ = kabsch_from_corresp_torch(P_all, Q_all)
-        inliers = torch.ones((B, N), dtype=torch.bool)
+        inliers = torch.ones((B, N), dtype=torch.bool, device=Q_all.device)
         return poses, inliers
 
     if random_seed is not None:
-        g = torch.Generator()
+        g = torch.Generator(device=Q_all.device)
         g.manual_seed(random_seed)
     else:
         g = None
 
-    poses_out = torch.zeros((B,7))
-    inlier_masks = torch.zeros((B,N), dtype=torch.bool)
+    poses_out = torch.zeros((B,7), device=Q_all.device, dtype=Q_all.dtype)
+    inlier_masks = torch.zeros((B,N), dtype=torch.bool, device=Q_all.device)
+
+    # 最小样本规模（刚体位姿 3D-3D：3 个非共线点）
+    s_min = 3
 
     for b in range(B):
-        P = P_all
-        Q = Q_all[b]  # (N,3)
+        P = P_all.to(Q_all.device).to(Q_all.dtype)   # (N,3)
+        Q = Q_all[b]                                 # (N,3)
 
         if N < 3:
             # 退化：直接全体 Kabsch
@@ -424,38 +537,79 @@ def pose_estimate_from_correspondences_torch(
         best_count = -1
         best_R, best_t = None, None
 
-        for _ in range(ransac_iters):
-            # 随机取 3 个索引（最小集）
-            idx = torch.randperm(N, generator=g)[:3]
+        # —— 早停控制量 —— #
+        # 自适应上限：从硬上限开始，随着最佳内点率上升而单调减小
+        N_required = int(ransac_iters)
+        # 无提升耐心计数器
+        no_improve = 0
+        i = 0
+
+        while i < N_required:
+            i += 1
+
+            # 1) 随机取 3 个索引（最小集）
+            idx = torch.randperm(N, generator=g, device=Q.device)[:3]
             Ps = P[idx]                                          # (3,3)
             Qs = Q[idx]                                          # (3,3)
 
-            # 检测退化：三点是否近乎共线
+            # 2) 退化检测：三点是否近乎共线（面积过小）
             v1 = Ps[1] - Ps[0]
             v2 = Ps[2] - Ps[0]
-            area = torch.linalg.norm(torch.cross(v1, v2)) / 2.0
-            if area < 1e-9:
+            area2 = torch.linalg.norm(torch.cross(v1, v2))  # 2*三角形面积
+            if area2 < 1e-9:
+                # 不计入无提升次数，继续采样
                 continue
 
-            # 用三点估计临时 R,t
+            # 3) 用三点估计临时 R,t
             R_tmp, t_tmp = _kabsch_single(Ps, Qs)
 
-            # 计算全体残差并判内点
+            # 4) 计算全体残差并判内点
             resid = torch.linalg.norm((P @ R_tmp.t()) + t_tmp - Q, dim=-1)  # (N,)
             inliers = resid <= ransac_thresh
             num_inliers = int(inliers.sum().item())
 
+            improved = False
             if num_inliers >= min_inliers and num_inliers > best_count:
+                improved = True
                 best_count = num_inliers
                 best_inliers = inliers
-                # 用当前内点重新拟合
+                # 5) 在内点上重估
                 R_refit, t_refit = _kabsch_single(P[best_inliers], Q[best_inliers])
                 best_R, best_t = R_refit, t_refit
+
+                # 6) 自适应更新“所需轮数”N_required（早停一）
+                #    公式：N >= log(1-p) / log(1 - w^s)
+                if 0.0 < ransac_confidence < 1.0:
+                    w = best_count / float(N)           # 当前最佳内点率
+                    ws = max(1e-12, w ** s_min)
+                    if ws >= 1.0 - 1e-12:
+                        # 几乎全是内点了，已经达到目标置信度
+                        N_est = i
+                    else:
+                        N_est = math.log(1.0 - ransac_confidence) / math.log(1.0 - ws)
+                    # 要求不少于当前已迭代次数 i，且不超过硬上限
+                    N_required = min(N_required, max(i, int(math.ceil(N_est))))
+
+            # 7) 早停二：无提升耐心
+            if improved:
+                no_improve = 0
+            else:
+                if early_stop_patience is not None:
+                    no_improve += 1
+                    if no_improve >= early_stop_patience:
+                        if print_debug:
+                            print(f"[b={b}] early stop by patience after {i} iters; best={best_count}")
+                        break
+
+            # 8) 早停三：完美一致（所有点为内点）
+            if best_count == N:
+                N_required = i
+                break
 
         # 若没有找到足够内点，退化为全体 Kabsch
         if best_inliers is None or best_count < 3:
             Rb, tb = _kabsch_single(P, Q)
-            inliers = torch.ones(N, dtype=torch.bool)
+            inliers = torch.ones(N, dtype=torch.bool, device=Q.device)
         else:
             Rb, tb = best_R, best_t
             inliers = best_inliers
@@ -465,7 +619,12 @@ def pose_estimate_from_correspondences_torch(
         poses_out[b, 3:] = qb
         inlier_masks[b] = inliers
 
+        if print_debug:
+            print(f"[b={b}] iters={i}/{ransac_iters} (need {N_required}), best inliers={best_count}/{N}")
+
     return poses_out, inlier_masks
+
+
 
 # ---------- 误差度量 ----------
 
