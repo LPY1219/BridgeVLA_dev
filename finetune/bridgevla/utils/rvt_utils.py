@@ -12,16 +12,18 @@ from bridgevla.models.peract_official import PreprocessAgent2
 def get_pc_img_feat(obs, pcd, bounds=None):
     """
     preprocess the data in the peract to our framework
+    :param pcd：是一个包括了从多个相机取得的点云的列表，从一个相机中获得的点云形状为[bs, 3, H, W]
+    :param obs: 从多个相机获得的rgb和pcd 每一个样本是 [rgb, pcd]  rgb的形状是[bs, 3, H, W]
     """
     bs = obs[0][0].shape[0]
     # concatenating the points from all the cameras
     # (bs, num_points, 3)
-    pc = torch.cat([p.permute(0, 2, 3, 1).reshape(bs, -1, 3) for p in pcd], 1)
+    pc = torch.cat([p.permute(0, 2, 3, 1).reshape(bs, -1, 3) for p in pcd], 1) # bs, h*w, 3
     _img_feat = [o[0] for o in obs]
     img_dim = _img_feat[0].shape[1]
     # (bs, num_points, 3)
     img_feat = torch.cat(
-        [p.permute(0, 2, 3, 1).reshape(bs, -1, img_dim) for p in _img_feat], 1
+        [p.permute(0, 2, 3, 1).reshape(bs, -1, img_dim) for p in _img_feat], 1 # bs, h*w, 3
     )
 
     img_feat = (img_feat + 1) / 2
