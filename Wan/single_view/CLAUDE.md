@@ -200,7 +200,12 @@ python experiments/evaluate.py --test_data path/to/test --model_path checkpoints
 - Heatmap处理参考: `reconstruct_heatmap/test_heatmap_peak_accuracy.py`
 - Calvin数据集处理参考: `RoboVLMs-dev/robovlms/data/calvin_dataset.py`
 
+## Claude Code 默认配置
+
+- **根目录**: `/share/project/lpy/BridgeVLA/Wan/single_view`
+- **默认Conda环境**: `test`
+
 ## 联系信息
 
 项目开发者: Claude Code Assistant
-最后更新: 2025-09-16
+最后更新: 2025-09-22

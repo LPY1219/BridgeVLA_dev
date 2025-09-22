@@ -128,6 +128,7 @@ def extract_heatmap_sequence_from_colormap(colormap_video, colormap_name='viridi
     Returns:
         Heatmap sequence as numpy array with shape (T, H, W)
     """
+    # Video case: (T, H, W, 3) -> (T, H, W)
     T, H, W, _ = colormap_video.shape
     heatmap_sequence = np.zeros((T, H, W), dtype=np.float32)
 
@@ -180,23 +181,18 @@ def convert_from_wan_format(decoded_5d):
     Convert decoded output back to image format
 
     Args:
-        decoded_5d: Tensor with shape (1, 3, 1, H, W) or (1, 3, T, H, W)
+        decoded_5d: Tensor with shape (1, 3, T, H, W)
 
     Returns:
-        RGB image/video as numpy array
-        - For single frame: (H, W, 3)
-        - For video: (T, H, W, 3)
+        RGB video as numpy array with shape (T, H, W, 3)
+        Always returns video format to maintain time dimension consistency
     """
     # Remove batch dimension
     decoded_4d = decoded_5d.squeeze(0)  # (3, T, H, W)
 
-    if decoded_4d.shape[1] == 1:
-        # Single frame case: (3, 1, H, W) -> (H, W, 3)
-        decoded_chw = decoded_4d.squeeze(1)  # Remove time dim
-        decoded_hwc = decoded_chw.permute(1, 2, 0).cpu().numpy()  # C,H,W -> H,W,C
-    else:
-        # Video case: (3, T, H, W) -> (T, H, W, 3)
-        decoded_hwc = decoded_4d.permute(1, 2, 3, 0).cpu().numpy()  # C,T,H,W -> T,H,W,C
+    # Always treat as video to maintain time dimension consistency
+    # Video case: (3, T, H, W) -> (T, H, W, 3)
+    decoded_hwc = decoded_4d.permute(1, 2, 3, 0).cpu().numpy()  # C,T,H,W -> T,H,W,C
 
     # Clamp to [0, 1] range
     decoded_hwc = np.clip(decoded_hwc, 0, 1)

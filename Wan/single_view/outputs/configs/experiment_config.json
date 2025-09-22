@@ -1,0 +1,73 @@
+{
+  "model": {
+    "wan_model_path": "/share/project/lpy/huggingface/Wan_2_2_TI2V_5B_Diffusers",
+    "input_image_size": [
+      256,
+      256
+    ],
+    "output_image_size": [
+      256,
+      256
+    ],
+    "sequence_length": 5,
+    "vae_subfolder": "vae",
+    "vae_torch_dtype": "float32",
+    "colormap_name": "viridis",
+    "colormap_resolution": 256,
+    "num_inference_steps": 20,
+    "guidance_scale": 7.5,
+    "enable_attention_slicing": true,
+    "enable_cpu_offload": false,
+    "enable_model_cpu_offload": false,
+    "use_torch_compile": false,
+    "device": "cuda",
+    "mixed_precision": true,
+    "checkpoint_path": null
+  },
+  "data": {
+    "train_data_root": "/share/project/lpy/test/FA_DATA/data/filtered_data/put_the_lion_on_the_top_shelf",
+    "val_data_root": null,
+    "sequence_length": 5,
+    "step_interval": 1,
+    "min_trail_length": 8,
+    "image_size": [
+      256,
+      256
+    ],
+    "sigma": 1.5,
+    "batch_size": 2,
+    "num_workers": 0,
+    "shuffle_train": true,
+    "pin_memory": false,
+    "drop_last": true,
+    "val_split": 0.2,
+    "augmentation": true,
+    "scene_bounds": [
+      0,
+      -0.45,
+      -0.05,
+      0.8,
+      0.55,
+      0.6
+    ],
+    "transform_augmentation_xyz": [
+      0.1,
+      0.1,
+      0.1
+    ],
+    "transform_augmentation_rpy": [
+      0.0,
+      0.0,
+      20.0
+    ],
+    "img_size": 256,
+    "rend_three_views": true,
+    "add_depth": false
+  },
+  "experiment_name": "debug_heatmap_prediction",
+  "project_name": "single_view_heatmap",
+  "description": "Single view RGB to heatmap sequence prediction",
+  "output_dir": "./outputs",
+  "checkpoint_dir": "./checkpoints",
+  "log_dir": "./logs"
+}
