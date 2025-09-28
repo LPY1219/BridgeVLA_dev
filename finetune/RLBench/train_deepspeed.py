@@ -434,7 +434,10 @@ class DeepSpeedAgent:
 
 def experiment(cmd_args):
     rank, world_size = setup_distributed()
-    local_rank = int(os.environ["LOCAL_RANK"])
+    try:
+        local_rank = int(os.environ["LOCAL_RANK"])
+    except Exception as e:
+        local_rank = 0
     device_id = f"cuda:{local_rank}"
     
     # Add error handling for GPU setup
@@ -597,7 +600,7 @@ def experiment(cmd_args):
     if rank == 0:
         swanlab.login(api_key="h1x6LOLp5qGLTfsPuB7Qw")
         if cmd_args.debug:
-            swanlab.init(project="BridgeVLA-V2", experiment_name=os.path.dirname(log_dir), mode="")
+            swanlab.init(project="BridgeVLA-V2", experiment_name=os.path.dirname(log_dir), mode="offline")
         else:
             swanlab.init(project="BridgeVLA-V2", experiment_name=os.path.dirname(log_dir))
 

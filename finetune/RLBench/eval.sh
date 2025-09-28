@@ -2,7 +2,8 @@ cd /share/project/lpy/BridgeVLA/finetune
 source /share/project/lpy/miniconda3/etc/profile.d/conda.sh
 conda activate test
 
-export COPPELIASIM_ROOT=$(pwd)/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 
+# export COPPELIASIM_ROOT=$(pwd)/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 
+export COPPELIASIM_ROOT=/share/project/lpy/BridgeVLA/finetune/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
 export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
 export DISPLAY=:1.0
