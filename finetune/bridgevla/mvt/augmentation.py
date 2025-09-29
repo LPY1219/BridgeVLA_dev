@@ -396,3 +396,170 @@ def apply_se3_aug_con(
     pcd = perturb_se3(pcd, trans_shift_4x4, rot_shift_4x4, action_gripper_4x4, bounds)
 
     return perturbed_action_trans, perturbed_action_quat_xyzw, pcd
+
+
+def apply_se3_aug_con_sequence(
+    pcd,
+    action_gripper_poses,
+    bounds,
+    trans_aug_range,
+    rot_aug_range,
+    scale_aug_range=False,
+    single_scale=True,
+    ver=2,
+):
+    """Apply SE3 augmentation to point clouds and multiple action poses without batch dimension.
+
+    This function is optimized for use in PyTorch __getitem__ methods where no batch dimension exists.
+    It processes a sequence of poses simultaneously for efficiency.
+
+    Args:
+        pcd: Point cloud data [num_points, 3]
+        action_gripper_poses: List of 6-DoF poses [[7], [7], ...] or tensor [num_poses, 7]
+        bounds: Metric scene bounds [6]
+        trans_aug_range: Translation augmentation range [x_range, y_range, z_range]
+        rot_aug_range: Rotation augmentation range [x_range, y_range, z_range]
+        scale_aug_range: Scale augmentation range (not implemented)
+        single_scale: Whether to preserve relative dimensions
+        ver: Version of the algorithm (1 or 2)
+
+    Returns:
+        perturbed_action_poses: List of perturbed poses [[3+4], [3+4], ...]
+        perturbed_pcd: Perturbed point cloud [num_points, 3]
+    """
+    device = pcd.device if torch.is_tensor(pcd) else torch.device('cpu')
+
+    # Convert inputs to tensors if needed
+    if not torch.is_tensor(pcd):
+        pcd = torch.tensor(pcd, device=device, dtype=torch.float32)
+    if not torch.is_tensor(bounds):
+        bounds = torch.tensor(bounds, device=device, dtype=torch.float32)
+    if not torch.is_tensor(trans_aug_range):
+        trans_aug_range = torch.tensor(trans_aug_range, device=device, dtype=torch.float32)
+    if not torch.is_tensor(rot_aug_range):
+        rot_aug_range = torch.tensor(rot_aug_range, device=device, dtype=torch.float32)
+
+    # Convert action_gripper_poses to tensor
+    if isinstance(action_gripper_poses, list):
+        action_gripper_poses = torch.stack([torch.tensor(pose, device=device, dtype=torch.float32)
+                                          for pose in action_gripper_poses])
+    elif not torch.is_tensor(action_gripper_poses):
+        action_gripper_poses = torch.tensor(action_gripper_poses, device=device, dtype=torch.float32)
+
+    num_poses = action_gripper_poses.shape[0]
+
+    # Generate a single set of random transformation parameters for consistent augmentation
+    identity_4x4 = torch.eye(4, device=device)
+
+    # Sample translation perturbation with specified range
+    trans_range = (bounds[3:] - bounds[:3]) * trans_aug_range
+    trans_shift = trans_range * aug_utils.rand_dist((3,)).to(device=device)
+
+    # Sample rotation perturbation
+    roll = np.deg2rad(rot_aug_range[0] * aug_utils.rand_dist((1,)).item())
+    pitch = np.deg2rad(rot_aug_range[1] * aug_utils.rand_dist((1,)).item())
+    yaw = np.deg2rad(rot_aug_range[2] * aug_utils.rand_dist((1,)).item())
+
+    rot_shift_3x3 = torch3d_tf.euler_angles_to_matrix(
+        torch.tensor([roll, pitch, yaw], device=device).unsqueeze(0), "XYZ"
+    )[0]  # Remove batch dimension
+
+    rot_shift_4x4 = identity_4x4.clone()
+    rot_shift_4x4[:3, :3] = rot_shift_3x3
+
+    trans_shift_4x4 = identity_4x4.clone()
+    trans_shift_4x4[:3, 3] = trans_shift
+
+    # Process all poses efficiently
+    perturbed_poses = []
+    original_action_gripper_4x4_list = []
+
+    for i in range(num_poses):
+        action_gripper_pose = action_gripper_poses[i]
+        action_gripper_trans = action_gripper_pose[:3]
+
+        # Create rotation matrix for original pose
+        if ver == 1:
+            action_gripper_quat_wxyz = torch.cat([
+                action_gripper_pose[6:7], action_gripper_pose[3:6]
+            ])
+            action_gripper_rot = torch3d_tf.quaternion_to_matrix(action_gripper_quat_wxyz.unsqueeze(0))[0]
+        elif ver == 2:
+            # Apply gimbal fix
+            r = Rotation.from_quat(action_gripper_pose[3:7].cpu().numpy())
+            euler = r.as_euler("xyz", degrees=True)
+            euler = aug_utils.sensitive_gimble_fix(euler.reshape(1, -1))[0]  # Process single pose
+            action_gripper_rot = torch.tensor(
+                Rotation.from_euler("xyz", euler, degrees=True).as_matrix(),
+                device=device, dtype=torch.float32
+            )
+        else:
+            raise ValueError(f"Unsupported version: {ver}")
+
+        # Store original action gripper 4x4 matrix (needed for perturb_se3)
+        original_action_gripper_4x4 = identity_4x4.clone()
+        original_action_gripper_4x4[:3, :3] = action_gripper_rot
+        original_action_gripper_4x4[:3, 3] = action_gripper_trans
+        original_action_gripper_4x4_list.append(original_action_gripper_4x4)
+
+        # Apply bounded translations to ensure poses stay within bounds
+        bounds_min = bounds[:3]
+        bounds_max = bounds[3:]
+
+        constrained_trans_shift = torch.clamp(
+            trans_shift,
+            min=bounds_min - action_gripper_trans,
+            max=bounds_max - action_gripper_trans
+        )
+
+        # Apply transformation to get perturbed pose
+        if ver == 1:
+            perturbed_action_gripper_4x4 = torch.mm(original_action_gripper_4x4, rot_shift_4x4)
+        elif ver == 2:
+            perturbed_action_gripper_4x4 = identity_4x4.clone()
+            perturbed_action_gripper_4x4[:3, 3] = original_action_gripper_4x4[:3, 3]
+            perturbed_action_gripper_4x4[:3, :3] = torch.mm(
+                rot_shift_4x4.T[:3, :3], original_action_gripper_4x4[:3, :3]
+            )
+
+        perturbed_action_gripper_4x4[:3, 3] += constrained_trans_shift
+
+        # Convert back to translation + quaternion
+        perturbed_action_trans = perturbed_action_gripper_4x4[:3, 3].cpu().numpy()
+        perturbed_action_quat_wxyz = torch3d_tf.matrix_to_quaternion(
+            perturbed_action_gripper_4x4[:3, :3].unsqueeze(0)
+        )[0]
+        perturbed_action_quat_xyzw = torch.cat([
+            perturbed_action_quat_wxyz[1:],
+            perturbed_action_quat_wxyz[0:1]
+        ]).cpu().numpy()
+
+        # Combine translation and quaternion
+        perturbed_pose = np.concatenate([perturbed_action_trans, perturbed_action_quat_xyzw])
+        perturbed_poses.append(perturbed_pose)
+
+    # Apply perturbation to point cloud using the ORIGINAL first pose as reference
+    # This is crucial: perturb_se3 needs the original action_gripper_4x4, not the perturbed one
+    original_reference_action_4x4 = original_action_gripper_4x4_list[0]
+
+    # Add batch dimensions for perturb_se3 function
+    pcd_batched = pcd.unsqueeze(0)  # [1, num_points, 3]
+    bounds_batched = bounds.unsqueeze(0)  # [1, 6]
+    trans_shift_4x4_batched = trans_shift_4x4.unsqueeze(0)  # [1, 4, 4]
+    rot_shift_4x4_batched = rot_shift_4x4.unsqueeze(0)  # [1, 4, 4]
+    original_reference_action_4x4_batched = original_reference_action_4x4.unsqueeze(0)  # [1, 4, 4]
+
+    perturbed_pcd = perturb_se3(
+        pcd_batched,
+        trans_shift_4x4_batched,
+        rot_shift_4x4_batched,
+        original_reference_action_4x4_batched,  # Use original pose, not perturbed
+        bounds_batched
+    )
+
+    # Remove batch dimension from result
+    perturbed_pcd = perturbed_pcd[0]
+
+    return perturbed_poses, perturbed_pcd
+
+

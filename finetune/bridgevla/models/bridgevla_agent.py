@@ -1123,6 +1123,8 @@ class RVTAgent:
                 
             dyn_cam_info = None
         
+
+        
         (
             action_rot_x_one_hot,
             action_rot_y_one_hot,

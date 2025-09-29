@@ -221,8 +221,8 @@ class MVT(nn.Module):
 
 
         # model_id = "google/paligemma-3b-pt-224"
-        # model_id="/share/project/lxh/project/VLMs/paligemma-3b-pt-224"
-        model_id="/data/lpy/huggingface/paligemma-3b-pt-224"
+        model_id="/share/project/lxh/project/VLMs/paligemma-3b-pt-224"
+        # model_id="/data/lpy/huggingface/paligemma-3b-pt-224"
         if load_pretrain:
             assert pretrain_path is not None
 
