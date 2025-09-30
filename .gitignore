@@ -63,7 +63,7 @@ finetune/bridgevla/libs
 finetune/CoppeliaSim
 CLIP/
 # Data and cache
-data/
+# data/
 *.tar.xz
 *.tar.gz
 *.zip
