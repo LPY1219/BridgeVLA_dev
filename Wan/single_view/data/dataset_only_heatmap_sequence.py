@@ -20,7 +20,7 @@ finetune_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 sys.path.append(finetune_path)
 import bridgevla.utils.rvt_utils as rvt_utils
 import bridgevla.mvt.utils as mvt_utils
-from bridgevla.mvt.augmentation import apply_se3_aug_con_shared
+from bridgevla.mvt.augmentation import apply_se3_aug_con_sequence,apply_se3_aug_con_shared
 
 def build_extrinsic_matrix(translation, quaternion):
     """
@@ -419,101 +419,63 @@ class RobotTrajectoryDataset(Dataset):
     def __len__(self) -> int:
         return len(self.valid_samples)
 
-    def preprocess(self, pcd_list, feat_list, all_poses: np.ndarray):
-        """
-        预处理点云序列、特征序列和姿态
+    def preprocess(self, pcd: np.ndarray, feat: np.ndarray, all_poses: np.ndarray) -> np.ndarray:
+        feat=_norm_rgb(feat) #
 
-        Args:
-            pcd_list: 点云列表，每个元素为 np.ndarray
-            feat_list: 特征列表，每个元素为 np.ndarray
-            all_poses: 姿态数组 [num_poses, 7]
-
-        Returns:
-            pc_list: 处理后的点云列表
-            img_feat_list: 处理后的特征列表
-            wpt_local: 局部坐标系下的姿态 [num_poses, 3]
-        """
-        # 确保输入是列表
-        if not isinstance(pcd_list, list):
-            pcd_list = [pcd_list]
-        if not isinstance(feat_list, list):
-            feat_list = [feat_list]
-
-        num_frames = len(pcd_list)
-
-        # 归一化RGB特征
-        feat_list = [_norm_rgb(feat) for feat in feat_list]
 
         # 使用外参矩阵对pcd进行变换
-        pcd_list = [convert_pcd_to_base(
+        pcd=convert_pcd_to_base(
             extrinsic_martix=self.extrinsic_matrix,
             pcd=pcd,
-        ) for pcd in pcd_list]
-
-        # 转换为torch张量
-        pcd_list = [torch.from_numpy(np.ascontiguousarray(pcd)).float() if isinstance(pcd, np.ndarray) else pcd
-                    for pcd in pcd_list]
+        )
+        # convert_pcd_to_base返回numpy数组，需要转换回torch张量
+        if isinstance(pcd, np.ndarray):
+            pcd = torch.from_numpy(np.ascontiguousarray(pcd)).float()
 
         with torch.no_grad():
-            # 展平点云和特征 [num_points, 3]
-            pc_list = [pcd.view(-1, 3).float() for pcd in pcd_list]
-            img_feat_list = [((feat.view(-1, 3) + 1) / 2).float() for feat in feat_list]
-
-            # 数据增强 - 使用批处理版本
-            if self.augmentation and self.mode == "train":
-                from bridgevla.mvt.augmentation import apply_se3_aug_con_shared
-
-                # 堆叠成batch [num_frames, num_points, 3]
-                pc_batch = torch.stack(pc_list, dim=0)
-
-                # 转换poses为tensor [num_frames, 7]
-                all_poses_tensor = torch.tensor(all_poses).float()
-
-                # 应用共享增强
-                perturbed_poses, pc_batch = apply_se3_aug_con_shared(
-                    pcd=pc_batch,
-                    action_gripper_pose=all_poses_tensor,
+            pc=pcd.view(-1,3)
+            img_feat=feat.view(-1,3) # (h*w,3)
+            img_feat = (img_feat + 1) / 2# (h*w,3)
+            
+            pc = pc.float()
+            img_feat = img_feat.float()
+            
+            # 数据增强
+            if self.augmentation and self.mode=="train":
+                all_poses, pc = apply_se3_aug_con_sequence(
+                    pcd=pc,
+                    action_gripper_poses=np.array(all_poses),
                     bounds=torch.tensor(self.scene_bounds),
                     trans_aug_range=self._transform_augmentation_xyz.clone().detach(),
                     rot_aug_range=torch.tensor(self._transform_augmentation_rpy),
                 )
-
-                # 分解回列表
-                pc_list = [pc_batch[i] for i in range(num_frames)]
-                action_trans_con = perturbed_poses[:, :3]
+                action_trans_con = torch.tensor(np.array(all_poses)).to(pc.device)[:,:3]
             else:
                 # 没有数据增强时，直接使用原始poses
-                action_trans_con = torch.tensor(all_poses).float()[:, :3]
+                action_trans_con = torch.tensor(all_poses).float()[:,:3]
+            pc, img_feat = rvt_utils.move_pc_in_bound(
+                pc.unsqueeze(0), img_feat.unsqueeze(0), self.scene_bounds # 增加一个batch 维度
+            )
+            pc=pc[0]
+            img_feat=img_feat[0]
+            # 将点云和wpt放在一个cube里面
 
-            # 对每个点云应用边界约束
-            processed_pc_list = []
-            processed_feat_list = []
-            for pc, img_feat in zip(pc_list, img_feat_list):
-                pc, img_feat = rvt_utils.move_pc_in_bound(
-                    pc.unsqueeze(0), img_feat.unsqueeze(0), self.scene_bounds
-                )
-                processed_pc_list.append(pc[0])
-                processed_feat_list.append(img_feat[0])
-
-            # 将点云和wpt放在一个cube里面 (使用第一个点云作为参考)
             wpt_local, rev_trans = mvt_utils.place_pc_in_cube(
-                processed_pc_list[0],
+                pc, 
                 action_trans_con,
-                with_mean_or_bounds=False,
-                scene_bounds=self.scene_bounds,
+                with_mean_or_bounds=False, # check it 
+                scene_bounds= self.scene_bounds,
             )
 
-            # 对每个点云应用place_pc_in_cube
-            final_pc_list = []
-            for pc in processed_pc_list:
-                pc = mvt_utils.place_pc_in_cube(
+            
+            pc = mvt_utils.place_pc_in_cube(
                     pc,
-                    with_mean_or_bounds=False,
-                    scene_bounds=self.scene_bounds,
+                    with_mean_or_bounds=False, # check it 
+                    scene_bounds= self.scene_bounds,
                 )[0]
-                final_pc_list.append(pc)
-
-        return final_pc_list, processed_feat_list, wpt_local
+            
+            # some other augmentation to image?
+        return pc, img_feat,  wpt_local
         
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -556,64 +518,28 @@ class RobotTrajectoryDataset(Dataset):
             future_pcds.append(future_pcd)
             future_rgbs.append(future_rgb)
 
-        # 3. 拼接start和future数据，一起送入preprocess进行处理
+        # 3. 将start_pose和所有future_poses一起送入preprocess进行处理
         all_poses = [start_pose] + future_poses
-        all_pcds = [start_pcd] + future_pcds
-        all_rgbs = [start_rgb] + future_rgbs
+        processed_pcd, processed_rgb, processed_poses = self.preprocess(start_pcd, start_rgb, all_poses)
 
-        # 使用新的preprocess函数处理序列
-        processed_pcd_list, processed_rgb_list, processed_poses = self.preprocess(
-            all_pcds, all_rgbs, all_poses
-        )
-
-        # 分离处理后的数据
-        processed_start_pcd = processed_pcd_list[0]
-        processed_start_rgb = processed_rgb_list[0]
-        processed_future_pcds = processed_pcd_list[1:]
-        processed_future_rgbs = processed_rgb_list[1:]
-
+        # # 分离处理后的poses
         processed_start_pose = processed_poses[0]
         processed_future_poses = processed_poses[1:]
 
-        # 4. 使用投影接口生成RGB图像序列
-        # 4.1 生成起始RGB图像
+        # 使用用户提供的投影接口生成RGB图像
         rgb_image = self.projection_interface.project_pointcloud_to_rgb(
-            processed_start_pcd, processed_start_rgb
-        )  # (1,3,256,256,6)
-        rgb_image = rgb_image[0, 0, :, :, 3:]  # (256,256,3)
-
+            processed_pcd, processed_rgb
+        )# (1,3,256,256,6)
+        rgb_image = rgb_image[0,0,:,:,3:] # (3,256,256,3)
         # 调整图像尺寸
         if rgb_image.shape[:2] != self.image_size:
             from PIL import Image
+            # 确保是numpy数组
             if isinstance(rgb_image, torch.Tensor):
                 rgb_image = rgb_image.cpu().numpy()
             rgb_pil = Image.fromarray((rgb_image * 255).astype(np.uint8))
             rgb_pil = rgb_pil.resize((self.image_size[1], self.image_size[0]))
             rgb_image = np.array(rgb_pil) / 255.0
-
-        # 4.2 生成未来RGB图像序列
-        rgb_future_list = []
-        for future_pcd, future_rgb in zip(processed_future_pcds, processed_future_rgbs):
-            future_rgb_image = self.projection_interface.project_pointcloud_to_rgb(
-                future_pcd, future_rgb
-            )  # (1,3,256,256,6)
-            future_rgb_image = future_rgb_image[0, 0, :, :, 3:]  # (256,256,3)
-
-            # 调整图像尺寸
-            if future_rgb_image.shape[:2] != self.image_size:
-                from PIL import Image
-                if isinstance(future_rgb_image, torch.Tensor):
-                    future_rgb_image = future_rgb_image.cpu().numpy()
-                rgb_pil = Image.fromarray((future_rgb_image * 255).astype(np.uint8))
-                rgb_pil = rgb_pil.resize((self.image_size[1], self.image_size[0]))
-                future_rgb_image = np.array(rgb_pil) / 255.0
-
-            # 转换为tensor并permute
-            future_rgb_tensor = torch.from_numpy(future_rgb_image).float().permute(2, 0, 1)  # (3, H, W)
-            rgb_future_list.append(future_rgb_tensor)
-
-        # 堆叠成序列 (T, 3, H, W)
-        rgb_future = torch.stack(rgb_future_list, dim=0)
 
         # 4. 使用处理后的poses生成heatmap序列
         img_locations= self.projection_interface.project_pose_to_pixel(
@@ -629,17 +555,16 @@ class RobotTrajectoryDataset(Dataset):
         heatmap_sequence = heatmap_sequence[0,:,0,:,:] # (seq_len+1,H,W) # 这里默认取了第一个投影视角
 
         # 5. 转换为torch tensors
-        rgb_tensor = torch.from_numpy(rgb_image).float().permute(2, 0, 1)  # (3, H, W)
-        heatmap_tensor = heatmap_sequence.float()  # (seq_len+1, H, W)
-        heatmap_future = heatmap_tensor[1:, :, :]  # (seq_len, H, W)
-        heatmap_start = heatmap_tensor[0:1, :, :]  # (1, H, W)
-
+        rgb_tensor = rgb_image.float().permute(2, 0, 1)  # (3, H, W)
+        heatmap_tensor = heatmap_sequence.float()  # (T, H, W)
+        heatmap_future = heatmap_tensor[1:,:,:] # (seq_len,H,W)
+        heatmap_start = heatmap_tensor[0:1,:,:] # (1,H,W)
         return {
             'heatmap_start': heatmap_start,
             'raw_rgb_image': start_rgb,
-            'rgb_image': rgb_tensor,  # 起始帧RGB图像 (3, H, W)
-            'rgb_sequence': rgb_future,  # 未来RGB图像序列 (T, 3, H, W)
-            'heatmap_sequence': heatmap_future,  # 未来热力图序列 (T, H, W)
+            'rgb_image': rgb_tensor, # 在投影之前的图像
+            'rgb_sequence': rgb_future, # (T,3,H,W) 这里简单重复
+            'heatmap_sequence': heatmap_future,
             'img_locations': img_locations,
             'future_poses': processed_future_poses,
             'instruction': trail_info['instruction'],

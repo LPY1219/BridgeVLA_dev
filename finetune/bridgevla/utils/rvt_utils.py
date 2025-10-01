@@ -4,6 +4,7 @@ import argparse
 import sys
 import math
 import torch
+from typing import Optional
 from torch.utils.tensorboard import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -375,7 +376,7 @@ def kabsch_from_corresp_torch(points_local, points_base_pred):
 #     ransac_iters: int = 1000,
 #     ransac_thresh: float = 0.003,
 #     min_inliers: int = 3,
-#     random_seed: int | None = None
+#     random_seed: Optional[int] = None
 # ):
 #     """
 #     估计位姿（刚体，无尺度）。支持 RANSAC。
@@ -478,10 +479,10 @@ def pose_estimate_from_correspondences_torch(
     ransac_iters: int = 1000,
     ransac_thresh: float = 0.01,
     min_inliers: int = 3,
-    random_seed: int | None = None,
+    random_seed: Optional[int] = None,
     # ↓ 新增参数：RANSAC 早停
     ransac_confidence: float = 0.99,      # 自适应早停：达到该置信度就可停止
-    early_stop_patience: int | None = None, # 可选：若连续若干轮无改进则停止
+    early_stop_patience: Optional[int] = None, # 可选：若连续若干轮无改进则停止
     print_debug: bool = False
 ):
     """
