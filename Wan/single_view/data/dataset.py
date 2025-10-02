@@ -467,7 +467,7 @@ class RobotTrajectoryDataset(Dataset):
                 pc_batch = torch.stack(pc_list, dim=0)
 
                 # 转换poses为tensor [num_frames, 7]
-                all_poses_tensor = torch.tensor(all_poses).float()
+                all_poses_tensor = torch.from_numpy(np.array(all_poses)).float()
 
                 # 应用共享增强
                 perturbed_poses, pc_batch = apply_se3_aug_con_shared(
@@ -582,11 +582,13 @@ class RobotTrajectoryDataset(Dataset):
         )  # (1,3,256,256,6)
         rgb_image = rgb_image[0, 0, :, :, 3:]  # (256,256,3)
 
+        # 确保是numpy数组
+        if isinstance(rgb_image, torch.Tensor):
+            rgb_image = rgb_image.cpu().numpy()
+
         # 调整图像尺寸
         if rgb_image.shape[:2] != self.image_size:
             from PIL import Image
-            if isinstance(rgb_image, torch.Tensor):
-                rgb_image = rgb_image.cpu().numpy()
             rgb_pil = Image.fromarray((rgb_image * 255).astype(np.uint8))
             rgb_pil = rgb_pil.resize((self.image_size[1], self.image_size[0]))
             rgb_image = np.array(rgb_pil) / 255.0
@@ -599,11 +601,13 @@ class RobotTrajectoryDataset(Dataset):
             )  # (1,3,256,256,6)
             future_rgb_image = future_rgb_image[0, 0, :, :, 3:]  # (256,256,3)
 
+            # 确保是numpy数组
+            if isinstance(future_rgb_image, torch.Tensor):
+                future_rgb_image = future_rgb_image.cpu().numpy()
+
             # 调整图像尺寸
             if future_rgb_image.shape[:2] != self.image_size:
                 from PIL import Image
-                if isinstance(future_rgb_image, torch.Tensor):
-                    future_rgb_image = future_rgb_image.cpu().numpy()
                 rgb_pil = Image.fromarray((future_rgb_image * 255).astype(np.uint8))
                 rgb_pil = rgb_pil.resize((self.image_size[1], self.image_size[0]))
                 future_rgb_image = np.array(rgb_pil) / 255.0
