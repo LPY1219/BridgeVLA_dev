@@ -483,7 +483,7 @@ class RobotTrajectoryDataset(Dataset):
                 action_trans_con = perturbed_poses[:, :3]
             else:
                 # 没有数据增强时，直接使用原始poses
-                action_trans_con = torch.tensor(all_poses).float()[:, :3]
+                action_trans_con = torch.from_numpy(np.array(all_poses)).float()[:, :3]
 
             # 对每个点云应用边界约束
             processed_pc_list = []
