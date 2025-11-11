@@ -621,7 +621,7 @@ def apply_se3_aug_con_shared(
 
     elif ver == 2:
         # applying gimble fix to calculate a new action_gripper_rot
-        r = Rotation.from_quat(action_gripper_pose[:, 3:7].cpu().numpy())
+        r = Rotation.from_quat(action_gripper_pose[:, 3:7].cpu().numpy()) # wxyz
         euler = r.as_euler("xyz", degrees=True)
         euler = aug_utils.sensitive_gimble_fix(euler)
         action_gripper_rot = torch.tensor(
@@ -714,7 +714,7 @@ def apply_se3_aug_con_shared(
     )  # [bs, 4]
 
     # Combine translation and quaternion into poses [bs, 7]
-    perturbed_poses = torch.cat([perturbed_action_trans, perturbed_action_quat_xyzw], dim=1)
+    perturbed_poses = torch.cat([perturbed_action_trans, perturbed_action_quat_xyzw], dim=1) # xyzw
 
     # apply perturbation to pointclouds
     # takes care for not moving the point out of the image

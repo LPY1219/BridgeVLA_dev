@@ -58,7 +58,7 @@ def quaternion_to_discrete_euler(quaternion, resolution, gimble_fix=True):
     assert np.min(euler) >= 0 and np.max(euler) <= 360
     disc = np.around((euler / resolution)).astype(int)
     disc[disc == int(360 / resolution)] = 0
-    return disc
+    return disc  # 有点问题？
 
 
 def quaternion_to_euler(quaternion, gimble_fix=True):

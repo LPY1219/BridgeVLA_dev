@@ -526,7 +526,7 @@ class RVTAgent:
             # gt_rot : [index_rx, index_ry, index_rz]
             gt_rot = aug_utils.quaternion_to_discrete_euler(
                 gt_rot, self._rotation_resolution
-            )
+            ) # debug！！！
             # 填充one hot
             action_rot_x_one_hot[b, gt_rot[0]] = 1
             action_rot_y_one_hot[b, gt_rot[1]] = 1
