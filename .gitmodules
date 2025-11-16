@@ -1,0 +1,3 @@
+[submodule "Wan/DiffSynth-Studio"]
+	path = Wan/DiffSynth-Studio
+	url = https://github.com/LPY1219/DiffSynth-Studio.git
