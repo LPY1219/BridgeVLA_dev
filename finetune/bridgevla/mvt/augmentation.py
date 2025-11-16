@@ -722,4 +722,3 @@ def apply_se3_aug_con_shared(
 
     return perturbed_poses, pcd
 
-
