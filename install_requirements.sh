@@ -4,7 +4,7 @@
 source /home/yw/anaconda3/bin/activate BridgeVLA_DM
 
 # 读取 requirements.txt 并逐个安装
-requirements_file="/DATA/disk1/lpy/BridgeVLA_dev/requirements.txt"
+requirements_file="./requirements.txt"
 
 echo "========================================="
 echo "开始安装依赖包..."
@@ -17,7 +17,7 @@ success=0
 skipped=0
 
 # 创建失败列表文件
-failed_packages="/DATA/disk1/lpy/BridgeVLA_dev/failed_packages.txt"
+failed_packages="./failed_packages.txt"
 > "$failed_packages"
 
 # 读取文件并处理每一行
@@ -74,4 +74,4 @@ if [ $skipped -gt 0 ]; then
 fi
 
 echo ""
-echo "完整日志已保存到: /DATA/disk1/lpy/BridgeVLA_dev/install_log.txt"
+echo "完整日志已保存到: ./install_log.txt"
