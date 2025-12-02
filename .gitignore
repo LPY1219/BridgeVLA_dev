@@ -78,7 +78,7 @@ CoppeliaSim_*/
 # OS
 .DS_Store
 Thumbs.db
-
+debug_img/
 # Temporary files
 *.tmp
 *.temp
