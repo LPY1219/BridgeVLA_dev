@@ -47,7 +47,7 @@ def get_cam_extrinsic(type):
     return transform
  
 class ZedCam:
-    def __init__(self, serial_number, resolution=None, zed_resolution="VGA"): # resolution=(480, 640), zed_resolution="HD1080" or "VGA"
+    def __init__(self, serial_number, resolution=None, zed_resolution="HD1080"): # resolution=(480, 640), zed_resolution="HD1080" or "VGA"
         """
         Args:
             serial_number: ZED相机序列号
@@ -76,7 +76,6 @@ class ZedCam:
         self.center_crop = False
         self.center_crop_size = (480, 640)  #这是必须的吗？
         
-
 
     def init_zed_37019563(self,serial_number):
         init_params = sl.InitParameters()
@@ -309,61 +308,6 @@ class ZedCam:
         return crop_img
         
     
-    def capture(self):
-        image = sl.Mat(self.img_size.width, self.img_size.height, sl.MAT_TYPE.U8_C4)
-        depth_map = sl.Mat(self.img_size.width, self.img_size.height, sl.MAT_TYPE.U8_C4)
-        point_cloud = sl.Mat()
-
-        while True:
-            runtime_parameters = sl.RuntimeParameters()
-            if self.zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS :
-                # A new image and depth is available if grab() returns SUCCESS
-                self.zed.retrieve_image(image, sl.VIEW.LEFT, sl.MEM.CPU, self.img_size) # Retrieve left image
-                self.zed.retrieve_measure(depth_map, sl.MEASURE.DEPTH, sl.MEM.CPU, self.img_size) # Retrieve depth
-                self.zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA, sl.MEM.CPU, self.img_size)
-                frame_timestamp_ms = self.zed.get_timestamp(sl.TIME_REFERENCE.CURRENT).get_microseconds()
-                break
-            
-        rgb_image = image.get_data()[..., :3] 
-        depth = depth_map.get_data()
-        depth[np.isnan(depth)] = 0
-        depth_image_meters = depth * 0.001
-        pcd = point_cloud.get_data()
-        pcd[np.isnan(pcd)] = 0
-        pcd = pcd[..., :3] * 0.001
-        
-        if self.center_crop:
-            result_dict = {
-                "rgb": self.center_crop_img(rgb_image),
-                "depth": self.center_crop_img(depth_image_meters),
-                "pcd": self.center_crop_img(pcd),
-                "timestamp_ms": frame_timestamp_ms / 1000.0,
-            }
-        else:
-            result_dict = {
-                "rgb": rgb_image,
-                "depth": depth_image_meters,
-                "pcd": pcd,
-                "timestamp_ms": frame_timestamp_ms / 1000.0,
-            }
-        return result_dict
-    
-    
-
-    def center_crop_img(self, img):
-        if len(img.shape) == 2:
-            crop_img = np.zeros((self.center_crop_size[0], self.center_crop_size[1]), dtype=img.dtype)
-            crop_img = img[(img.shape[0] - self.center_crop_size[0]) // 2: (img.shape[0] + self.center_crop_size[0]) // 2,
-                          (img.shape[1] - self.center_crop_size[1]) // 2: (img.shape[1] + self.center_crop_size[1]) // 2]
-            return crop_img
-        else:
-            channel = img.shape[-1]
-            crop_img = np.zeros((self.center_crop_size[0], self.center_crop_size[1], channel), dtype=img.dtype)
-            crop_img = img[(img.shape[0] - self.center_crop_size[0]) // 2: (img.shape[0] + self.center_crop_size[0]) // 2,
-                            (img.shape[1] - self.center_crop_size[1]) // 2: (img.shape[1] + self.center_crop_size[1]) // 2]
-        return crop_img
-        
-    
     def stop(self):
         # Close the camera
         self.zed.close()
@@ -483,14 +427,13 @@ class Camera:
             cam.stop()
 
 
-
-           
+     
             
 if __name__ == "__main__":
     # 测试所有三个相机
-    test_camera_type = "all"  # 使用所有三个相机
+    test_camera_type = "3rd_2"  # 使用所有三个相机
 
-    cameras = Camera(camera_type=test_camera_type)
+    cameras = Camera(camera_type=test_camera_type,zed_resolution="VGA")
 
     import open3d as o3d
     observation = cameras.capture()
@@ -551,6 +494,10 @@ if __name__ == "__main__":
                                                             x_range=(0, 1.0),
                                                             y_range=(-1, 1),
                                                             z_range=(-0.05, 1))
+            pcd_flat, rgb_flat, mask = filter_pcd_by_range(pcd, rgb,
+                                                            x_range=(-100, 100.0),
+                                                            y_range=(-100, 100),
+                                                            z_range=(-100, 100))
             rgb_flat = rgb_flat / 255.0
             print(f"    过滤后保留点数: {pcd_flat.shape[0]} (原始: {pcd.shape[0]*pcd.shape[1]})")
         else:
@@ -588,7 +535,7 @@ if __name__ == "__main__":
         observation[cam_type]["rgb"] = observation[cam_type]["rgb"][:,:,::-1].copy()
 
         # 转换点云到基坐标系
-        observation[cam_type]["pcd"] = convert_pcd_to_base(cam_type, observation[cam_type]["pcd"])
+        # observation[cam_type]["pcd"] = convert_pcd_to_base(cam_type, observation[cam_type]["pcd"])
 
         # 打印转换后点云的统计信息
         pcd_after = observation[cam_type]["pcd"]
@@ -606,7 +553,7 @@ if __name__ == "__main__":
         save_path = f"/media/casia/data4/lpy/debug_{cam_type}.png"
         save_rgb_image(observation[cam_type]["rgb"], save_path)
         print(f"图像已保存到: {save_path}")
-
+    '''
     # 第二步：合并三个相机的点云并可视化（应用范围过滤）
     print("\n" + "=" * 60)
     print("第二步：合并三个相机的点云并可视化（范围过滤）")
@@ -656,3 +603,4 @@ if __name__ == "__main__":
 
     cameras.stop()
     print("\n测试完成！")
+    '''
