@@ -289,18 +289,18 @@ class RVTBoxRenderer():
         else:
             img_out = pc_images
         # For Debug
-        import numpy as np
-        import cv2
-        import time
-        import os
-        init_folder=time.time()
-        for idx in range(pc_images.shape[0]):
-            debug_img = (255 * pc_images[idx, :, :, 3:6].cpu().numpy()).astype(np.uint8)
-            # debug_img = (255 * pc_images[idx, :, :, :3].cpu().numpy()).astype(np.uint8)
-            # debug_img = Image.fromarray(debug_img)
-            # debug_img.save(f'debug_img/{time.time()}__{self.task_name}_{idx}.png')
-            if not os.path.exists(f'debug_img/{init_folder}'):
-                os.makedirs(f'debug_img/{init_folder}')
-            cv2.imwrite(f'debug_img/{init_folder}/{idx}.png', debug_img)
+        # import numpy as np
+        # import cv2
+        # import time
+        # import os
+        # init_folder=time.time()
+        # for idx in range(pc_images.shape[0]):
+        #     debug_img = (255 * pc_images[idx, :, :, 3:6].cpu().numpy()).astype(np.uint8)
+        #     # debug_img = (255 * pc_images[idx, :, :, :3].cpu().numpy()).astype(np.uint8)
+        #     # debug_img = Image.fromarray(debug_img)
+        #     # debug_img.save(f'debug_img/{time.time()}__{self.task_name}_{idx}.png')
+        #     if not os.path.exists(f'debug_img/{init_folder}'):
+        #         os.makedirs(f'debug_img/{init_folder}')
+        #     cv2.imwrite(f'debug_img/{init_folder}/{idx}.png', debug_img)
             
         return img_out
