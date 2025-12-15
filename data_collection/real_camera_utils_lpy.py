@@ -26,16 +26,16 @@ def save_rgb_image(rgb_array, save_path):
 def get_cam_extrinsic(type):
     if type == "3rd_1":
         # TODO: 填充第一个第三视角相机的实际外参
-        trans=np.array([1.0497611144463495, 0.01746184726329958, 0.85120098377284])
-        quat=np.array([ -0.6323862586787503, -0.6488064758070046,0.2859559861943219,0.31203677787212836]) # x y z w
+        trans=np.array([1.0500235453581752, 0.018840177419218063, 0.8526189719141685])
+        quat=np.array([ -0.650217823736857, -0.6493193457487534,0.2805349490016194,0.2773108568375482]) # x y z w
     elif type == "3rd_2":
         # TODO: 填充第二个第三视角相机的实际外参
-        trans=np.array([0.28403357074295216, 0.6279420373974938,  0.32231572498235006])
-        quat=np.array([ -0.14708995922586277, 0.7825087781755415,-0.6049952931661551,0.005025059198994926]) # x y z w
+        trans=np.array([0.41319647185014996, 0.671280823421573,  0.31847372597347334])
+        quat=np.array([ -0.004178189428432915, 0.8100601972017345,  -0.5859203348840233,  0.0028462131169476428]) # x y z w
     elif type == "3rd_3":
         # TODO: 填充第三个第三视角相机的实际外参
-        trans=np.array([0.15293207243222945,-0.735529121897676,  0.34171364623182177])
-        quat=np.array([ -0.7625074787512868, 0.20314889855597454,-0.07050629938153204,0.6101981084954066]) # x y z w
+        trans=np.array([1.0195456272363708, -0.09614207876725467,  0.579374291081325])
+        quat=np.array([ -0.6486533850105296, -0.6257763784047043,0.299967106317545,0.3125259116818196]) # x y z w
     else:
         raise ValueError("Invalid type")
 
@@ -57,14 +57,17 @@ class ZedCam:
         self.zed = sl.Camera()
         self.zed_resolution = zed_resolution
 
-        if serial_number==37019563:
-            self.init_zed_37019563(serial_number=serial_number)
-        elif serial_number==34438347:
-            self.init_zed_34438347(serial_number=serial_number)
-        elif serial_number==30519310:
-            self.init_zed_30519310(serial_number=serial_number)
-        else:
-            assert False
+        # if serial_number==37019563:
+        #     self.init_zed_37019563(serial_number=serial_number)
+        # elif serial_number==34438347:
+        #     self.init_zed_34438347(serial_number=serial_number)
+        # elif serial_number==30519310:
+        #     self.init_zed_30519310(serial_number=serial_number)
+        # else:
+        #     assert False
+        
+        
+        self.init_zed_auto(serial_number=serial_number)
         if resolution:
             self.img_size = sl.Resolution()
             self.img_size.height = resolution[0]
@@ -230,8 +233,8 @@ class ZedCam:
         # Create a InitParameters object and set configuration parameters
         init_params = sl.InitParameters()
         init_params.set_from_serial_number(serial_number)
-        init_params.camera_resolution = sl.RESOLUTION.HD1080 # sl.RESOLUTION.AUTO, sl.RESOLUTION.HD720, sl.RESOLUTION.HD1080
-        
+        # init_params.camera_resolution = sl.RESOLUTION.HD1080 # sl.RESOLUTION.AUTO, sl.RESOLUTION.HD720, sl.RESOLUTION.HD1080
+        init_params.camera_resolution = sl.RESOLUTION.VGA
         init_params.camera_fps = 30  # Set fps at 30
         init_params.depth_mode = sl.DEPTH_MODE.NEURAL # Use ULTRA depth mode
         init_params.coordinate_units = sl.UNIT.MILLIMETER # Use millimeter units (for depth measurements)
@@ -309,68 +312,13 @@ class ZedCam:
         return crop_img
         
     
-    def capture(self):
-        image = sl.Mat(self.img_size.width, self.img_size.height, sl.MAT_TYPE.U8_C4)
-        depth_map = sl.Mat(self.img_size.width, self.img_size.height, sl.MAT_TYPE.U8_C4)
-        point_cloud = sl.Mat()
-
-        while True:
-            runtime_parameters = sl.RuntimeParameters()
-            if self.zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS :
-                # A new image and depth is available if grab() returns SUCCESS
-                self.zed.retrieve_image(image, sl.VIEW.LEFT, sl.MEM.CPU, self.img_size) # Retrieve left image
-                self.zed.retrieve_measure(depth_map, sl.MEASURE.DEPTH, sl.MEM.CPU, self.img_size) # Retrieve depth
-                self.zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA, sl.MEM.CPU, self.img_size)
-                frame_timestamp_ms = self.zed.get_timestamp(sl.TIME_REFERENCE.CURRENT).get_microseconds()
-                break
-            
-        rgb_image = image.get_data()[..., :3] 
-        depth = depth_map.get_data()
-        depth[np.isnan(depth)] = 0
-        depth_image_meters = depth * 0.001
-        pcd = point_cloud.get_data()
-        pcd[np.isnan(pcd)] = 0
-        pcd = pcd[..., :3] * 0.001
-        
-        if self.center_crop:
-            result_dict = {
-                "rgb": self.center_crop_img(rgb_image),
-                "depth": self.center_crop_img(depth_image_meters),
-                "pcd": self.center_crop_img(pcd),
-                "timestamp_ms": frame_timestamp_ms / 1000.0,
-            }
-        else:
-            result_dict = {
-                "rgb": rgb_image,
-                "depth": depth_image_meters,
-                "pcd": pcd,
-                "timestamp_ms": frame_timestamp_ms / 1000.0,
-            }
-        return result_dict
-    
-    
-
-    def center_crop_img(self, img):
-        if len(img.shape) == 2:
-            crop_img = np.zeros((self.center_crop_size[0], self.center_crop_size[1]), dtype=img.dtype)
-            crop_img = img[(img.shape[0] - self.center_crop_size[0]) // 2: (img.shape[0] + self.center_crop_size[0]) // 2,
-                          (img.shape[1] - self.center_crop_size[1]) // 2: (img.shape[1] + self.center_crop_size[1]) // 2]
-            return crop_img
-        else:
-            channel = img.shape[-1]
-            crop_img = np.zeros((self.center_crop_size[0], self.center_crop_size[1], channel), dtype=img.dtype)
-            crop_img = img[(img.shape[0] - self.center_crop_size[0]) // 2: (img.shape[0] + self.center_crop_size[0]) // 2,
-                            (img.shape[1] - self.center_crop_size[1]) // 2: (img.shape[1] + self.center_crop_size[1]) // 2]
-        return crop_img
-        
-    
     def stop(self):
         # Close the camera
         self.zed.close()
         
 
 class Camera:
-    def __init__(self, camera_type="all", timestamp_tolerance_ms=80, zed_resolution="HD1080"):
+    def __init__(self, camera_type="all", timestamp_tolerance_ms=80, zed_resolution="VGA"):
         """
         Args:
             camera_type: 相机类型，可选 "all", "3rd_1", "3rd_2", "3rd_3"
@@ -608,51 +556,51 @@ if __name__ == "__main__":
         print(f"图像已保存到: {save_path}")
 
     # 第二步：合并三个相机的点云并可视化（应用范围过滤）
-    print("\n" + "=" * 60)
-    print("第二步：合并三个相机的点云并可视化（范围过滤）")
-    print("=" * 60)
+    # print("\n" + "=" * 60)
+    # print("第二步：合并三个相机的点云并可视化（范围过滤）")
+    # print("=" * 60)
 
-    # 收集所有相机的点云和RGB数据，并应用范围过滤
-    merged_pcd_list = []
-    merged_rgb_list = []
+    # # 收集所有相机的点云和RGB数据，并应用范围过滤
+    # merged_pcd_list = []
+    # merged_rgb_list = []
 
-    for cam_type in ["3rd_1", "3rd_2", "3rd_3"]:
-    # for cam_type in ["3rd_1", "3rd_2"]:
-        # 应用范围过滤
-        pcd_filtered, rgb_filtered, mask = filter_pcd_by_range(
-            observation[cam_type]["pcd"],
-            observation[cam_type]["rgb"],
-            x_range=(-0.1, 0.9),
-            y_range=(-0.5, 0.5),
-            z_range=(-0.1, 0.9)
-        )
+    # for cam_type in ["3rd_1", "3rd_2", "3rd_3"]:
+    # # for cam_type in ["3rd_1", "3rd_2"]:
+    #     # 应用范围过滤
+    #     pcd_filtered, rgb_filtered, mask = filter_pcd_by_range(
+    #         observation[cam_type]["pcd"],
+    #         observation[cam_type]["rgb"],
+    #         x_range=(-0.1, 0.9),
+    #         y_range=(-0.5, 0.5),
+    #         z_range=(-0.1, 0.9)
+    #     )
 
-        merged_pcd_list.append(pcd_filtered)
-        merged_rgb_list.append(rgb_filtered)
+    #     merged_pcd_list.append(pcd_filtered)
+    #     merged_rgb_list.append(rgb_filtered)
 
-        print(f"{cam_type} 过滤后点云形状: {pcd_filtered.shape}")
+    #     print(f"{cam_type} 过滤后点云形状: {pcd_filtered.shape}")
 
-    # 拼接所有点云
-    merged_pcd = np.concatenate(merged_pcd_list, axis=0)  # (N_total, 3)
-    merged_rgb = np.concatenate(merged_rgb_list, axis=0)  # (N_total, 3)
+    # # 拼接所有点云
+    # merged_pcd = np.concatenate(merged_pcd_list, axis=0)  # (N_total, 3)
+    # merged_rgb = np.concatenate(merged_rgb_list, axis=0)  # (N_total, 3)
 
-    print(f"\n合并后点云形状: {merged_pcd.shape}")
-    print(f"合并后RGB形状: {merged_rgb.shape}")
+    # print(f"\n合并后点云形状: {merged_pcd.shape}")
+    # print(f"合并后RGB形状: {merged_rgb.shape}")
 
-    # 可视化合并后的点云
-    merged_rgb_normalized = merged_rgb / 255.0
+    # # 可视化合并后的点云
+    # merged_rgb_normalized = merged_rgb / 255.0
 
-    pcd_o3d = o3d.geometry.PointCloud()
-    pcd_o3d.points = o3d.utility.Vector3dVector(merged_pcd)
-    pcd_o3d.colors = o3d.utility.Vector3dVector(merged_rgb_normalized)
+    # pcd_o3d = o3d.geometry.PointCloud()
+    # pcd_o3d.points = o3d.utility.Vector3dVector(merged_pcd)
+    # pcd_o3d.colors = o3d.utility.Vector3dVector(merged_rgb_normalized)
 
-    coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
-        size=0.1,
-        origin=[0, 0, 0]
-    )
+    # coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+    #     size=0.1,
+    #     origin=[0, 0, 0]
+    # )
 
-    print("\n可视化合并后的点云...")
-    o3d.visualization.draw_geometries([pcd_o3d, coordinate_frame], window_name="Merged Point Cloud (3 Cameras, Filtered)")
+    # print("\n可视化合并后的点云...")
+    # o3d.visualization.draw_geometries([pcd_o3d, coordinate_frame], window_name="Merged Point Cloud (3 Cameras, Filtered)")
 
-    cameras.stop()
-    print("\n测试完成！")
+    # cameras.stop()
+    # print("\n测试完成！")

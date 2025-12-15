@@ -99,11 +99,15 @@ class CollectDataWithTeleop2:
        else:
            raise ValueError(f"不支持的分辨率类型: {resolution}，请使用 'HD1080' 或 'VGA'")
 
+       # 目标关节位置（push_t任务的初始状态）
+       self.target_joints_push_t = np.array([-0.31877957,0.17202022,-0.59794134,-2.3979113,0.18720852,2.52827357,-0.27203674])
+
        # 初始化或复用机械臂
        if fa is None:
-           rospy.loginfo("[Robot] 初始化机械臂...")
-           self.fa = FrankaArm()
-           self.fa.reset_joints()
+           rospy.loginfo("[Robot] 初始化机械臂（禁用gripper）...")
+           self.fa = FrankaArm(with_gripper=False)
+           rospy.loginfo("[Robot] 将机械臂移动到push_t初始状态...")
+           self.reset_joints_push_t()
            self.fa_is_owned = True  # 标记机械臂是否由此对象创建
        else:
            rospy.loginfo("[Robot] 复用已初始化的机械臂...")
@@ -113,6 +117,10 @@ class CollectDataWithTeleop2:
        self.current_pose = self.fa.get_pose()
        # 暂存的目标动作，用于后续通过ros向机械臂传输动作
        self.target_pose = self.current_pose.copy()
+
+       # 记录初始z轴高度（push_t任务中保持不变）
+       self.initial_z = self.target_pose.translation[2]
+       rospy.loginfo(f"[Robot] 初始z轴高度: {self.initial_z:.4f}m (已锁定)")
 
        # 初始化或复用相机
        if camera is None:
@@ -146,21 +154,44 @@ class CollectDataWithTeleop2:
        self.last_g_state = False
        self.last_r_state = False
       
-       # 初始化夹爪状态（只在第一次初始化机械臂时执行）
-       if self.fa_is_owned:
-           try:
-               rospy.loginfo("[Setup] 初始化夹爪状态...")
-               self.fa.open_gripper()  # 确保夹爪处于打开状态
-               rospy.sleep(1.0)  # 等待夹爪动作完成
-               rospy.loginfo("[OK] 夹爪初始化完成（打开状态）")
-           except Exception as e:
-               rospy.logerr(f"夹爪初始化失败: {e}")
-       else:
-           rospy.loginfo("[Reuse] 复用机械臂，跳过夹爪初始化")
+       # 夹爪已禁用，跳过夹爪初始化
+       # if self.fa_is_owned:
+       #     try:
+       #         rospy.loginfo("[Setup] 初始化夹爪状态...")
+       #         self.fa.open_gripper()  # 确保夹爪处于打开状态
+       #         rospy.sleep(1.0)  # 等待夹爪动作完成
+       #         rospy.loginfo("[OK] 夹爪初始化完成（打开状态）")
+       #     except Exception as e:
+       #         rospy.logerr(f"夹爪初始化失败: {e}")
+       # else:
+       #     rospy.loginfo("[Reuse] 复用机械臂，跳过夹爪初始化")
       
        #* 数据存储功能
        self.data_arrays: Dict[str, SharedNDArray] = {} # 存储机械臂状态相关内容
-      
+
+   def reset_joints_push_t(self):
+       """将机械臂重置到push_t任务的初始关节状态"""
+       rospy.loginfo(f"[Robot] 目标关节位置: {self.target_joints_push_t}")
+       try:
+           # 将机械臂移动到目标关节位置
+           self.fa.goto_joints(
+               self.target_joints_push_t.tolist(),
+               duration=5.0,
+               ignore_virtual_walls=True
+           )
+           rospy.loginfo("[OK] 机械臂已移动到push_t初始状态")
+
+           # 等待移动完成
+           rospy.sleep(1.0)
+
+           # 验证当前位置
+           current_joints = self.fa.get_joints()
+           rospy.loginfo(f"[Robot] 当前关节位置: {current_joints}")
+
+       except Exception as e:
+           rospy.logerr(f"reset_joints_push_t 失败: {e}")
+           raise
+
    def setup_shared_arrays(self, shm_manager: SharedMemoryManager):
        """设置共享内存数组"""
        rospy.loginfo(f"{'=' * 20} 正在设置共享内存数组 {'=' * 20}")
@@ -386,13 +417,13 @@ class CollectDataWithTeleop2:
            # 设置共享内存
            self.setup_shared_arrays(shm_manager)
           
-           # 创建Spacemouse控制器
+           # 创建Spacemouse控制器（优化参数以获得丝滑控制）
            spacemouse = FrankaSpacemouse(
                shm_manager,
                frequency=self.frequency,
-               deadzone=0.05,
-               position_sensitivity=0.5, #TODO 在这里改变灵敏度
-               rotation_sensitivity=0.8,
+               deadzone=0.03,  # 降低死区，提高响应灵敏度
+               position_sensitivity=0.4,  # 适中灵敏度，既响应又不过激
+               rotation_sensitivity=0.6,  # 适中旋转灵敏度
                debug=False
            )
           
@@ -407,21 +438,23 @@ class CollectDataWithTeleop2:
                rospy.loginfo("[OK] 键盘监听已启动")
 
            rospy.loginfo("[Control] 控制说明:")
-           rospy.loginfo("  - SpaceMouse: 控制机械臂移动")
+           rospy.loginfo("  - SpaceMouse: 控制机械臂移动（XY平移 + 旋转）")
            rospy.loginfo("  - 'R' 键: 开始/停止录制")
-           rospy.loginfo("  - 'G' 键: 切换夹爪")
+           rospy.loginfo("  - 约束: Z轴高度固定不变")
+           rospy.loginfo("  - 注意: 夹爪已禁用")
            rospy.loginfo("  - Ctrl+C: 停止采集")
            rospy.loginfo("="*50)
           
            with spacemouse:
                try:
-                   # 启动机械臂动态控制
+                   # 启动机械臂动态控制（优化阻抗参数以获得丝滑控制）
+                   # 平移阻抗适中使运动流畅，z轴稍高保持稳定，旋转阻抗较低避免卡顿
                    self.fa.goto_pose(
                        self.target_pose,
                        duration=self.duration,
                        dynamic=True,
                        buffer_time=10,
-                       cartesian_impedances=[600.0, 600.0, 600.0, 50.0, 50.0, 50.0] # TODO 可以在这里降低阻抗以提高响应速度
+                       cartesian_impedances=[600.0, 600.0, 800.0, 50.0, 50.0, 50.0]  # xy=600(流畅), z=800(适中), 旋转=50(柔顺)
                    )
                   
                    start_time = time.time()
@@ -434,32 +467,27 @@ class CollectDataWithTeleop2:
                        self.update_keyboard_state()
                       
                        motion = spacemouse.get_motion_state()
-                      
-                       # 调整运动方向
+
+                       # 调整运动方向映射
                        motion[0] = -motion[0]
                        motion[4] = -motion[4]
                        motion[3], motion[4] = motion[4], motion[3]
-                      
-                       #* === 步骤2: 计算机械臂增量 ===
+                       motion[2] = 0  # push_t任务：禁用z轴移动
+
+                       #* === 步骤2: 计算并更新目标位姿 ===
                        translation_delta = motion[:3] * self.dt
                        rotation_angles = motion[3:] * self.dt
-                      
-                       #* === 步骤3: 将位姿增量添加到目标位姿上，这时候机械臂还没有进行移动 ===
+
                        self.target_pose.translation += translation_delta
-                      
                        if np.linalg.norm(rotation_angles) > 1e-6:
                            rotation_scipy = R.from_euler('xyz', rotation_angles)
-                           rotation_matrix_delta = rotation_scipy.as_matrix()
-                           self.target_pose.rotation = self.target_pose.rotation @ rotation_matrix_delta
-                      
-                       #* === 步骤4: 记录相机照片以及基于目标位姿的机械臂状态 ===
-                       # 只有在录制状态下且夹爪控制不在进行中时才进行数据采集
-                       if self.recording and not self.gripper_control_in_progress:
-                           self.control_step()
-                      
-                       #* === 步骤5: 发布控制指令 ===
-                       # 只有在录制状态下且夹爪控制不在进行中时才发布控制指令
-                       if self.recording and not self.gripper_control_in_progress and i > 0:
+                           self.target_pose.rotation = self.target_pose.rotation @ rotation_scipy.as_matrix()
+
+                       # 强制锁定z轴高度
+                       self.target_pose.translation[2] = self.initial_z
+
+                       #* === 步骤3: 发布控制指令（始终发布，确保丝滑控制）===
+                       if i > 0:
                            timestamp = time.time() - start_time
                            publish_pose(
                                self.target_pose,
@@ -468,6 +496,10 @@ class CollectDataWithTeleop2:
                                pub=self.publisher,
                                rate=self.rate
                            )
+
+                       #* === 步骤4: 录制时采集数据 ===
+                       if self.recording and not self.gripper_control_in_progress:
+                           self.control_step()
                       
                        # 增加控制步数计数器（无论是否保存数据）
                        if self.recording and not self.gripper_control_in_progress:
@@ -637,25 +669,34 @@ class CollectDataWithTeleop2:
       
 def main():
     """主函数 - 支持连续采集多条轨迹"""
-    frequency = 60.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）
+    frequency = 80.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）
     duration=600
     # task_name = 'put_lion_on_top_shelf'
-    task_name = 'put_the_lion_on_the_top_shelf'
+    task_name = 'push_T'
     gripper_thres = 0.05
     # instruction = "put the lion on the top shelf"
-    instruction = "put the lion on the top shelf"
-    task_idx = 2  # 起始轨迹序号
+    instruction = 'push the T block into the target'
+    task_idx = 3  # 起始轨迹序号
 
     data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_3"
-    save_interval = 3  # 每1步保存一次数据（即60/3=20Hz保存频率）
+    save_interval = 4  # 每1步保存一次数据（即60/3=20Hz保存频率）
     resolution = "VGA"  # 图像分辨率：可选 "HD1080" (1080x1920) 或 "VGA" (376x672)
+
+    # push_t任务的目标关节位置
+    target_joints_push_t = np.array([-0.32337659, 0.16913922, -0.60301942, -2.37739704,
+                                      0.12417754, 2.47628506, -0.19928152])
 
     # 在循环外初始化相机和机械臂（只初始化一次）
     # 注意：必须先初始化 FrankaArm，因为它会初始化 ROS 节点
     print("[Setup] 初始化共享资源（相机和机械臂）...")
-    print("[Robot] 初始化机械臂...")
-    shared_fa = FrankaArm()
-    shared_fa.reset_joints()
+    print("[Robot] 初始化机械臂（禁用gripper）...")
+    shared_fa = FrankaArm(with_gripper=False)
+
+    # 移动到push_t初始状态
+    print("[Robot] 将机械臂移动到push_t初始状态...")
+    shared_fa.goto_joints(target_joints_push_t.tolist(), duration=5.0, ignore_virtual_walls=True)
+    rospy.sleep(1.0)
+    print("[OK] 机械臂已移动到push_t初始状态")
 
     # 现在 ROS 节点已经由 FrankaArm 初始化，可以使用 rospy.loginfo 了
     rospy.loginfo("[Start] 启动连续采集模式 - 高频遥操作数据采集系统")
@@ -666,14 +707,14 @@ def main():
     rospy.loginfo("[Camera] 初始化3个第三视角Zed相机...")
     shared_camera = Camera(camera_type="all", zed_resolution=resolution)
 
-    # 初始化夹爪状态
-    try:
-        rospy.loginfo("[Setup] 初始化夹爪状态...")
-        shared_fa.open_gripper()
-        rospy.sleep(1.0)
-        rospy.loginfo("[OK] 夹爪初始化完成（打开状态）")
-    except Exception as e:
-        rospy.logerr(f"夹爪初始化失败: {e}")
+    # 夹爪已禁用，跳过夹爪初始化
+    # try:
+    #     rospy.loginfo("[Setup] 初始化夹爪状态...")
+    #     shared_fa.open_gripper()
+    #     rospy.sleep(1.0)
+    #     rospy.loginfo("[OK] 夹爪初始化完成（打开状态）")
+    # except Exception as e:
+    #     rospy.logerr(f"夹爪初始化失败: {e}")
 
     rospy.loginfo("[OK] 共享资源初始化完成\n")
 
@@ -686,8 +727,9 @@ def main():
             print("="*60)
             print("\n🎮 控制说明:")
             print("   [R] 开始/停止录制")
-            print("   [G] 切换夹爪")
-            print("   [SpaceMouse] 控制机械臂移动")
+            print("   [SpaceMouse] 控制机械臂移动（XY平移 + 旋转）")
+            print("   约束: Z轴高度固定不变")
+            print("   注意: 夹爪已禁用")
             print("\n⏸️  等待中... 按 [R] 键开始录制\n")
 
             collector = CollectDataWithTeleop2(
@@ -723,14 +765,12 @@ def main():
                 print(f"📍 下一条轨迹序号: trail_{current_trail}")
                 print("="*60)
 
-                # 自动复位机械臂到初始位置并打开夹爪
-                print("\n🤖 正在复位机械臂到初始位置...", flush=True)
+                # 自动复位机械臂到push_t初始位置
+                print("\n🤖 正在复位机械臂到push_t初始位置...", flush=True)
                 try:
-                    shared_fa.reset_joints()
-                    print("✅ 机械臂已复位到初始位置！", flush=True)
-                    print("✋ 正在打开夹爪...", flush=True)
-                    shared_fa.open_gripper()
-                    print("✅ 夹爪已打开！", flush=True)
+                    shared_fa.goto_joints(target_joints_push_t.tolist(), duration=5.0, ignore_virtual_walls=True)
+                    rospy.sleep(1.0)
+                    print("✅ 机械臂已复位到push_t初始位置！", flush=True)
                 except Exception as e:
                     print(f"⚠️  复位出错: {e}", flush=True)
 

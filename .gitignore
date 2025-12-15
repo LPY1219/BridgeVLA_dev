@@ -78,7 +78,14 @@ CoppeliaSim_*/
 # OS
 .DS_Store
 Thumbs.db
+<<<<<<< HEAD
 debug_img/
+=======
+
+
+*.pyc
+
+>>>>>>> 77c386f3c047eb6c5f4a3a0b803232e3ed432fd9
 # Temporary files
 *.tmp
 *.temp

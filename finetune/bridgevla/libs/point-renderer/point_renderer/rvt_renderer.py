@@ -85,14 +85,32 @@ class RVTBoxRenderer():
         one_view,
         add_3p,
     ):
+        # cam_dict = {
+        #     "top": {"eye": [0, 0, 1], "at": [0, 0, 0], "up": [0, 1, 0]},
+        #     "front": {"eye": [1, 0, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+        #     "down": {"eye": [0, 0, -1], "at": [0, 0, 0], "up": [0, 1, 0]},
+        #     "back": {"eye": [-1, 0, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+        #     "left": {"eye": [0, -1, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+        #     "right": {"eye": [0, 0.5, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+        # }
+
         cam_dict = {
-            "top": {"eye": [0, 0, 1], "at": [0, 0, 0], "up": [0, 1, 0]},
-            "front": {"eye": [1, 0, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+            "top": {"eye": [0.724944, 0.103689, 1.388798], "at": [0, 0, 0], "up": [-0.688807, 0.002966, 0.724938]},
+            "front": {"eye": [0.780292, -0.030017, 0.12224695], "at": [0, 0, 0], "up": [-0.624329, 0.021463, 0.780867]},
+            "right": {"eye": [-0.009512, 0.949688, 0.313053], "at": [0, 0, 0], "up": [0.003435, -0.313034, 0.949736]},
             "down": {"eye": [0, 0, -1], "at": [0, 0, 0], "up": [0, 1, 0]},
             "back": {"eye": [-1, 0, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
             "left": {"eye": [0, -1, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
-            "right": {"eye": [0, 0.5, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
         }
+
+        # cam_dict = {
+        #     "top": {"eye": [0.724944, 0.003689, 0.688798], "at": [0, 0, 0], "up": [-0.688807, 0.002966, 0.724938]},
+        #     "front": {"eye": [0.780292, -0.030017, 0.624695], "at": [0, 0, 0], "up": [-0.624329, 0.021463, 0.780867]},
+        #     "right": {"eye": [-0.009512, 0.949688, 0.313053], "at": [0, 0, 0], "up": [0.003435, -0.313034, 0.949736]},
+        #     "down": {"eye": [0, 0, -1], "at": [0, 0, 0], "up": [0, 1, 0]},
+        #     "back": {"eye": [-1, 0, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+        #     "left": {"eye": [0, -1, 0], "at": [0, 0, 0], "up": [0, 0, 1]},
+        # }
 
         assert not (two_views and three_views)
         assert not (one_view and three_views)
@@ -131,6 +149,8 @@ class RVTBoxRenderer():
             cameras = OrthographicCameras.from_lookat(eyes, ats, ups, img_sizes_w=[2, 2], img_size_px=img_size)
         else:
             cameras = PerspectiveCameras.from_lookat(eyes, ats, ups, hfov=70, img_size=img_size)
+        print("DEBUG camera poses:\n", cameras.poses)
+        print("DEBUG camera inv_poses:\n", cameras.inv_poses)
         return cameras
 
     @torch.no_grad()
@@ -302,5 +322,4 @@ class RVTBoxRenderer():
         #     if not os.path.exists(f'debug_img/{init_folder}'):
         #         os.makedirs(f'debug_img/{init_folder}')
         #     cv2.imwrite(f'debug_img/{init_folder}/{idx}.png', debug_img)
-
         return img_out

@@ -36,8 +36,8 @@ apt install libxcb-xinerama0
 pip install pyqt6
 pip3 install yacs
 pip3 install wandb
-# pip install 'git+https://github.com/facebookresearch/pytorch3d.git@stable'
-pip install 'git+ssh://git@github.com/facebookresearch/pytorch3d.git@stable'
+pip install 'git+https://github.com/facebookresearch/pytorch3d.git@stable'
+# pip install 'git+ssh://git@github.com/facebookresearch/pytorch3d.git@stable'
 
 apt-get update
 apt-get install -y  libxcb-xinput0  libx11-xcb1 libxcb1 libxcb-render0 libxcb-shm0 libxcb-xfixes0 libxcb-shape0 libxcb-randr0 libxcb-image0 libxcb-keysyms1 libxcb-icccm4 libxcb-sync1 libxcb-xinerama0 libxcb-util1
