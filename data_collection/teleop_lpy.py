@@ -637,16 +637,16 @@ class CollectDataWithTeleop2:
       
 def main():
     """主函数 - 支持连续采集多条轨迹"""
-    frequency = 60.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）
+    frequency = 80.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）
     duration=600
     # task_name = 'put_lion_on_top_shelf'
     task_name = 'put_the_lion_on_the_top_shelf'
     gripper_thres = 0.05
     # instruction = "put the lion on the top shelf"
     instruction = "put the lion on the top shelf"
-    task_idx = 2  # 起始轨迹序号
+    task_idx = 4  # 起始轨迹序号
 
-    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_3"
+    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_4"
     save_interval = 3  # 每1步保存一次数据（即60/3=20Hz保存频率）
     resolution = "VGA"  # 图像分辨率：可选 "HD1080" (1080x1920) 或 "VGA" (376x672)
 
