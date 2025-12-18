@@ -150,8 +150,8 @@ class RVTBoxRenderer():
             cameras = OrthographicCameras.from_lookat(eyes, ats, ups, img_sizes_w=[2, 2], img_size_px=img_size)
         else:
             cameras = PerspectiveCameras.from_lookat(eyes, ats, ups, hfov=70, img_size=img_size)
-        print("DEBUG camera poses:\n", cameras.poses)
-        print("DEBUG camera inv_poses:\n", cameras.inv_poses)
+        # print("DEBUG camera poses:\n", cameras.poses)
+        # print("DEBUG camera inv_poses:\n", cameras.inv_poses)
         return cameras
 
     @torch.no_grad()
