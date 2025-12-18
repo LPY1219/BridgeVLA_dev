@@ -17,6 +17,56 @@ import argparse
 import shutil
 from pathlib import Path
 from datetime import datetime
+import numpy as np
+import types
+
+# Set up numpy compatibility layer BEFORE importing anything else
+# This creates stub modules that redirect to current numpy
+def setup_numpy_compatibility():
+    """Setup module aliases for old numpy pickle files"""
+
+    # Wrapper for _frombuffer to handle old-style calls
+    def _frombuffer_wrapper(buf, dtype, shape=None, order='C'):
+        """Wrapper to handle old numpy _frombuffer calls"""
+        if isinstance(shape, tuple) and shape:
+            # Old style: _frombuffer(buf, dtype, count, offset)
+            # New style: frombuffer(buf, dtype, count, offset)
+            return np.frombuffer(buf, dtype=dtype).reshape(shape, order=order)
+        else:
+            return np.frombuffer(buf, dtype=dtype)
+
+    # Mapping of old function names to new ones
+    function_mappings = {
+        '_frombuffer': _frombuffer_wrapper,
+        '_fromfunction': np.fromfunction,
+        '_fromiter': np.fromiter,
+        '_reconstruct': np.core.multiarray._reconstruct if hasattr(np.core.multiarray, '_reconstruct') else None,
+    }
+
+    # Create module stubs for old numpy internal modules
+    for old_module_name in ['numpy.core.numeric', 'numpy.core.multiarray',
+                             'numpy._core.numeric', 'numpy._core.multiarray']:
+        if old_module_name not in sys.modules:
+            # Create a stub module that redirects to numpy.core.multiarray
+            stub = types.ModuleType(old_module_name)
+            stub.__dict__.update(np.core.multiarray.__dict__)
+
+            # Add renamed functions
+            for old_name, new_func in function_mappings.items():
+                if new_func is not None:
+                    setattr(stub, old_name, new_func)
+
+            # Also add top-level numpy attributes
+            for attr in dir(np):
+                if not attr.startswith('_') or attr in function_mappings:
+                    try:
+                        setattr(stub, attr, getattr(np, attr))
+                    except:
+                        pass
+
+            sys.modules[old_module_name] = stub
+
+setup_numpy_compatibility()
 
 # Add current directory to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -67,14 +117,20 @@ def update_extrinsics_file(trail_path, new_extrinsics, dry_run=False, backup=Fal
         print(f"  [WARNING] extrinsics.pkl not found in {trail_path}")
         return False
 
-    # Read old extrinsics for comparison
-    with open(extrinsics_path, 'rb') as f:
-        old_extrinsics = pickle.load(f)
+    # Read old extrinsics for comparison (if possible)
+    old_extrinsics = None
+    try:
+        with open(extrinsics_path, 'rb') as f:
+            old_extrinsics = pickle.load(f)
+    except Exception as e:
+        print(f"  [WARNING] Could not load old extrinsics: {e}")
+        print(f"  [INFO] Will proceed with update anyway")
 
     if dry_run:
         print(f"  [DRY-RUN] Would update: {extrinsics_path}")
-        print(f"    Old 3rd_1:\n{old_extrinsics['3rd_1']}")
-        print(f"    New 3rd_1:\n{new_extrinsics['3rd_1']}")
+        if old_extrinsics:
+            print(f"    Old 3rd_1 translation: {old_extrinsics['3rd_1'][:3, 3]}")
+        print(f"    New 3rd_1 translation: {new_extrinsics['3rd_1'][:3, 3]}")
         return True
 
     # Create backup if requested
