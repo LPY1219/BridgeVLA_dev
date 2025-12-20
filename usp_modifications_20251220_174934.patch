@@ -1,0 +1,1027 @@
+diff --git a/diffsynth/models/wan_video_dit_mv.py b/diffsynth/models/wan_video_dit_mv.py
+index cac8947..b1c4304 100644
+--- a/diffsynth/models/wan_video_dit_mv.py
++++ b/diffsynth/models/wan_video_dit_mv.py
+@@ -174,6 +174,18 @@ class CrossAttention(nn.Module):
+             ctx = y[:, 257:]
+         else:
+             ctx = y
++
++        # 如果 x 和 ctx 的 batch size 不同（多视角情况），需要扩展 ctx
++        # x: (b*v, seq_x, d), ctx: (b, seq_ctx, d)
++        # 扩展 ctx 为 (b*v, seq_ctx, d) 以匹配 x 的 batch size
++        if x.shape[0] != ctx.shape[0]:
++            # 假设 x.shape[0] = b * v，ctx.shape[0] = b
++            # 我们需要将 ctx 在 batch 维度上重复 v 次
++            num_views = x.shape[0] // ctx.shape[0]
++            ctx = ctx.repeat(num_views, 1, 1)
++            if self.has_image_input:
++                img = img.repeat(num_views, 1, 1)
++
+         q = self.norm_q(self.q(x))
+         k = self.norm_k(self.k(ctx))
+         v = self.v(ctx)
+@@ -298,29 +310,102 @@ class DiTBlock(nn.Module):
+         v = x.shape[0]  # 视角数量 (因为 b=1, 所以 x.shape[0] = b*v = v)
+         f, h, w = shape_info
+ 
+-        # 2.3 应用归一化和调制
++        # 2.3 检测是否在 USP 模式下运行
++        # 在 USP 模式下，序列维度被分割到多个 GPU 上，需要先 all-gather 再进行 MVS attention
++        use_usp = False
++        sp_size = 1
++        sp_rank = 0
++        try:
++            import torch.distributed as dist
++            if dist.is_initialized() and dist.get_world_size() > 1:
++                from xfuser.core.distributed import (
++                    get_sequence_parallel_world_size,
++                    get_sequence_parallel_rank,
++                    get_sp_group
++                )
++                sp_size = get_sequence_parallel_world_size()
++                sp_rank = get_sequence_parallel_rank()
++                if sp_size > 1:
++                    use_usp = True
++        except (ImportError, RuntimeError):
++            pass
++
++        # 2.4 应用归一化和调制
+         input_x = modulate(self.norm_mvs(x), shift_mvs, scale_mvs)
+ 
+-        # 2.4 重排数据布局: 从 "视角优先" 改为 "时间优先"
++        # 2.5 如果在 USP 模式下，先 all-gather 获取完整序列
++        if use_usp:
++            # 记录当前分片的序列长度（这是 padding 后的长度，所有 rank 相同）
++            local_seq_len = x.shape[1]
++            full_seq_len = f * h * w
++
++            # 使用 get_sp_group().all_gather 收集完整序列
++            # 注意：all_gather 后的长度是 sp_size * local_seq_len，可能包含 padding
++            # 需要确保张量是连续的
++            x_full = get_sp_group().all_gather(x.contiguous(), dim=1)
++            input_x_full = get_sp_group().all_gather(input_x.contiguous(), dim=1)
++            gate_mvs_full = get_sp_group().all_gather(gate_mvs.contiguous(), dim=1)
++
++            # 移除 padding，只保留真实序列
++            x_full = x_full[:, :full_seq_len, :]
++            input_x_full = input_x_full[:, :full_seq_len, :]
++            gate_mvs_full = gate_mvs_full[:, :full_seq_len, :]
++
++            # 使用完整序列进行 MVS attention
++            x_for_mvs = x_full
++            input_x_for_mvs = input_x_full
++            gate_mvs_for_rearrange = gate_mvs_full
++        else:
++            x_for_mvs = x
++            input_x_for_mvs = input_x
++            gate_mvs_for_rearrange = gate_mvs
++
++        # 2.6 重排数据布局: 从 "视角优先" 改为 "时间优先"
+         # x 和 input_x: (b*v, f*h*w, d) -> (b*f, v*h*w, d)
+-        x = rearrange(x, '(b v) (f h w) d -> (b f) (v h w) d', v=v, f=f, h=h, w=w)
+-        input_x = rearrange(input_x, '(b v) (f h w) d -> (b f) (v h w) d', v=v, f=f, h=h, w=w)
++        x_rearranged = rearrange(x_for_mvs, '(b v) (f h w) d -> (b f) (v h w) d', v=v, f=f, h=h, w=w)
++        input_x_rearranged = rearrange(input_x_for_mvs, '(b v) (f h w) d -> (b f) (v h w) d', v=v, f=f, h=h, w=w)
+ 
+         # gate_mvs 的重排：
+         # 当前形状: (b, f*h*w, d) = (1, 128, 3072)
+         # 目标形状: (b*f, v*h*w, d) = (2, 192, 3072)
+         # 步骤1: (b, f*h*w, d) -> (b, f, h*w, d) -> (b*f, h*w, d)
+-        gate_mvs = rearrange(gate_mvs, 'b (f h w) d -> (b f) (h w) d', f=f, h=h, w=w)
++        gate_mvs_rearranged = rearrange(gate_mvs_for_rearrange, 'b (f h w) d -> (b f) (h w) d', f=f, h=h, w=w)
+         # 现在: gate_mvs.shape = (2, 64, 3072)
+         # 步骤2: 扩展到视角维度 (b*f, h*w, d) -> (b*f, v*h*w, d)
+-        gate_mvs = gate_mvs.unsqueeze(1).expand(-1, v, -1, -1)  # (2, 3, 64, 3072)
+-        gate_mvs = rearrange(gate_mvs, 'bf v hw d -> bf (v hw) d')  # (2, 192, 3072)
+-
+-        # 2.5 执行多视角注意力
+-        x = x + gate_mvs * self.projector(self.mvs_attn(input_x, freqs_mvs))
+-
+-        # 2.6 恢复原始数据布局: 从 "时间优先" 恢复为 "视角优先"
+-        x = rearrange(x, '(b f) (v h w) d -> (b v) (f h w) d', v=v, f=f, h=h, w=w)
++        gate_mvs_rearranged = gate_mvs_rearranged.unsqueeze(1).expand(-1, v, -1, -1)  # (2, 3, 64, 3072)
++        gate_mvs_rearranged = rearrange(gate_mvs_rearranged, 'bf v hw d -> bf (v hw) d')  # (2, 192, 3072)
++
++        # 2.7 执行多视角注意力
++        x_rearranged = x_rearranged + gate_mvs_rearranged * self.projector(self.mvs_attn(input_x_rearranged, freqs_mvs))
++
++        # 2.8 恢复原始数据布局: 从 "时间优先" 恢复为 "视角优先"
++        x_restored = rearrange(x_rearranged, '(b f) (v h w) d -> (b v) (f h w) d', v=v, f=f, h=h, w=w)
++
++        # 2.9 如果在 USP 模式下，切回本地分片并恢复 padding
++        if use_usp:
++            # 计算每个 rank 在原始（未 padding）序列中的起止位置
++            # 使用 torch.chunk 的实际逻辑：
++            # - 基本大小是 full_seq_len // sp_size
++            # - 余数 r = full_seq_len % sp_size
++            # - 前 r 个 chunk 的大小是 base_size + 1，后面的是 base_size
++            base_size = full_seq_len // sp_size
++            remainder = full_seq_len % sp_size
++            chunk_sizes = [base_size + (1 if i < remainder else 0) for i in range(sp_size)]
++            start_idx = sum(chunk_sizes[:sp_rank])
++            my_chunk_size = chunk_sizes[sp_rank]
++            end_idx = start_idx + my_chunk_size
++
++            # 从完整序列中取出本 rank 的部分
++            x_local = x_restored[:, start_idx:end_idx, :]
++
++            # 如果需要，补 padding 以匹配输入形状
++            if x_local.shape[1] < local_seq_len:
++                pad_needed = local_seq_len - x_local.shape[1]
++                x_local = torch.nn.functional.pad(x_local, (0, 0, 0, pad_needed), value=0)
++
++            x = x_local
++        else:
++            x = x_restored
+ 
+         # ============================================================
+         # 3. Cross-Attention: 文本条件注意力
+diff --git a/diffsynth/models/wan_video_image_encoder.py b/diffsynth/models/wan_video_image_encoder.py
+index 5ca878b..5138acd 100644
+--- a/diffsynth/models/wan_video_image_encoder.py
++++ b/diffsynth/models/wan_video_image_encoder.py
+@@ -874,8 +874,10 @@ class WanImageEncoder(torch.nn.Module):
+         videos = self.transforms.transforms[-1](videos.mul_(0.5).add_(0.5))
+ 
+         # forward
+-        dtype = next(iter(self.model.visual.parameters())).dtype
+-        videos = videos.to(dtype)
++        # 使用模型参数的实际设备和dtype，而不是依赖输入的设备
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        param = next(iter(self.model.visual.parameters()))
++        videos = videos.to(device=param.device, dtype=param.dtype)
+         out = self.model.visual(videos, use_31_block=True)
+         return out
+         
+diff --git a/diffsynth/models/wan_video_vae.py b/diffsynth/models/wan_video_vae.py
+index 2e6419d..17ac74e 100644
+--- a/diffsynth/models/wan_video_vae.py
++++ b/diffsynth/models/wan_video_vae.py
+@@ -1077,6 +1077,12 @@ class WanVideoVAE(nn.Module):
+         self.upsampling_factor = 8
+         self.z_dim = z_dim
+ 
++    def get_model_device(self):
++        """获取模型实际所在的设备，用于 USP 模式下的设备一致性"""
++        try:
++            return next(self.model.parameters()).device
++        except StopIteration:
++            return torch.device("cuda")
+ 
+     def build_1d_mask(self, length, left_bound, right_bound, border_width):
+         x = torch.ones((length,))
+@@ -1115,7 +1121,9 @@ class WanVideoVAE(nn.Module):
+                 tasks.append((h, h_, w, w_))
+ 
+         data_device = "cpu"
+-        computation_device = device
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        computation_device = self.get_model_device()
+ 
+         out_T = T * 4 - 3
+         weight = torch.zeros((1, 1, out_T, H * self.upsampling_factor, W * self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
+@@ -1167,7 +1175,9 @@ class WanVideoVAE(nn.Module):
+                 tasks.append((h, h_, w, w_))
+ 
+         data_device = "cpu"
+-        computation_device = device
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        computation_device = self.get_model_device()
+ 
+         out_T = (T + 3) // 4
+         weight = torch.zeros((1, 1, out_T, H // self.upsampling_factor, W // self.upsampling_factor), dtype=video.dtype, device=data_device)
+@@ -1204,13 +1214,17 @@ class WanVideoVAE(nn.Module):
+ 
+ 
+     def single_encode(self, video, device):
+-        video = video.to(device)
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        model_device = self.get_model_device()
++        video = video.to(model_device)
+         x = self.model.encode(video, self.scale)
+         return x
+ 
+ 
+     def single_decode(self, hidden_state, device):
+-        hidden_state = hidden_state.to(device)
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        model_device = self.get_model_device()
++        hidden_state = hidden_state.to(model_device)
+         video = self.model.decode(hidden_state, self.scale)
+         return video.clamp_(-1, 1)
+ 
+diff --git a/diffsynth/models/wan_video_vae_2.py b/diffsynth/models/wan_video_vae_2.py
+index 53e4ea8..ab38df1 100644
+--- a/diffsynth/models/wan_video_vae_2.py
++++ b/diffsynth/models/wan_video_vae_2.py
+@@ -1102,6 +1102,12 @@ class WanVideoVAE(nn.Module):
+         self.upsampling_factor = 8
+         self.z_dim = z_dim
+ 
++    def get_model_device(self):
++        """获取模型实际所在的设备，用于 USP 模式下的设备一致性"""
++        try:
++            return next(self.model.parameters()).device
++        except StopIteration:
++            return torch.device("cuda")
+ 
+     def build_1d_mask(self, length, left_bound, right_bound, border_width):
+         x = torch.ones((length,))
+@@ -1140,7 +1146,9 @@ class WanVideoVAE(nn.Module):
+                 tasks.append((h, h_, w, w_))
+ 
+         data_device = "cpu"
+-        computation_device = device
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        computation_device = self.get_model_device()
+ 
+         out_T = T * 4 - 3
+         weight = torch.zeros((1, 1, out_T, H * self.upsampling_factor, W * self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
+@@ -1192,7 +1200,9 @@ class WanVideoVAE(nn.Module):
+                 tasks.append((h, h_, w, w_))
+ 
+         data_device = "cpu"
+-        computation_device = device
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        computation_device = self.get_model_device()
+ 
+         out_T = (T + 3) // 4
+         weight = torch.zeros((1, 1, out_T, H // self.upsampling_factor, W // self.upsampling_factor), dtype=video.dtype, device=data_device)
+@@ -1229,13 +1239,17 @@ class WanVideoVAE(nn.Module):
+ 
+ 
+     def single_encode(self, video, device):
+-        video = video.to(device)
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        model_device = self.get_model_device()
++        video = video.to(model_device)
+         x = self.model.encode(video, self.scale)
+         return x
+ 
+ 
+     def single_decode(self, hidden_state, device):
+-        hidden_state = hidden_state.to(device)
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        model_device = self.get_model_device()
++        hidden_state = hidden_state.to(model_device)
+         video = self.model.decode(hidden_state, self.scale)
+         return video.clamp_(-1, 1)
+ 
+diff --git a/diffsynth/models/wan_video_vae_history.py b/diffsynth/models/wan_video_vae_history.py
+index bb0a4ab..27c1500 100644
+--- a/diffsynth/models/wan_video_vae_history.py
++++ b/diffsynth/models/wan_video_vae_history.py
+@@ -1094,6 +1094,12 @@ class WanVideoVAE(nn.Module):
+         self.upsampling_factor = 8
+         self.z_dim = z_dim
+ 
++    def get_model_device(self):
++        """获取模型实际所在的设备，用于 USP 模式下的设备一致性"""
++        try:
++            return next(self.model.parameters()).device
++        except StopIteration:
++            return torch.device("cuda")
+ 
+     def build_1d_mask(self, length, left_bound, right_bound, border_width):
+         x = torch.ones((length,))
+@@ -1132,7 +1138,9 @@ class WanVideoVAE(nn.Module):
+                 tasks.append((h, h_, w, w_))
+ 
+         data_device = "cpu"
+-        computation_device = device
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        computation_device = self.get_model_device()
+ 
+         out_T = T * 4 - 3
+         weight = torch.zeros((1, 1, out_T, H * self.upsampling_factor, W * self.upsampling_factor), dtype=hidden_states.dtype, device=data_device)
+@@ -1194,7 +1202,9 @@ class WanVideoVAE(nn.Module):
+                 tasks.append((h, h_, w, w_))
+ 
+         data_device = "cpu"
+-        computation_device = device
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        computation_device = self.get_model_device()
+ 
+         # 计算输出时间维度：条件帧编码为1，后续每4帧编码为1
+         num_cond = min(num_condition_frames, 4, T)
+@@ -1242,13 +1252,17 @@ class WanVideoVAE(nn.Module):
+             device: 计算设备
+             num_condition_frames: 条件帧数量（1-4）
+         """
+-        video = video.to(device)
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        model_device = self.get_model_device()
++        video = video.to(model_device)
+         x = self.model.encode(video, self.scale, num_condition_frames=num_condition_frames)
+         return x
+ 
+ 
+     def single_decode(self, hidden_state, device):
+-        hidden_state = hidden_state.to(device)
++        # 使用模型实际所在的设备，而不是传入的 device 参数
++        model_device = self.get_model_device()
++        hidden_state = hidden_state.to(model_device)
+         video = self.model.decode(hidden_state, self.scale)
+         return video.clamp_(-1, 1)
+ 
+diff --git a/diffsynth/pipelines/wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip.py b/diffsynth/pipelines/wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip.py
+index 03dc2e7..a9018ac 100644
+--- a/diffsynth/pipelines/wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip.py
++++ b/diffsynth/pipelines/wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip.py
+@@ -470,13 +470,45 @@ class WanVideoPipeline(BasePipeline):
+             ring_degree=1,
+             ulysses_degree=dist.get_world_size(),
+         )
+-        torch.cuda.set_device(dist.get_rank())
++        local_rank = dist.get_rank()
++        torch.cuda.set_device(local_rank)
++        # 注意：此时模型尚未加载，模型的设备迁移在 enable_usp() 中完成
+             
+             
+     def enable_usp(self):
++        import torch.distributed as dist
+         from xfuser.core.distributed import get_sequence_parallel_world_size
+         from ..distributed.xdit_context_parallel import usp_attn_forward, usp_dit_forward
+ 
++        # 将所有模型移动到当前进程的 GPU 上
++        # 这是 USP 模式所必需的，每个进程需要有自己的模型副本在对应的 GPU 上
++        local_rank = dist.get_rank()
++        local_device = f"cuda:{local_rank}"
++        print(f"[USP] Rank {local_rank}: Moving models to {local_device}")
++
++        if self.dit is not None:
++            self.dit = self.dit.to(local_device)
++        if self.dit2 is not None:
++            self.dit2 = self.dit2.to(local_device)
++        if self.vae is not None:
++            self.vae = self.vae.to(local_device)
++        if self.text_encoder is not None:
++            self.text_encoder = self.text_encoder.to(local_device)
++        if self.image_encoder is not None:
++            self.image_encoder = self.image_encoder.to(local_device)
++        if self.motion_controller is not None:
++            self.motion_controller = self.motion_controller.to(local_device)
++        if self.vace is not None:
++            self.vace = self.vace.to(local_device)
++        if hasattr(self, 'prompter') and self.prompter is not None and hasattr(self.prompter, 'text_encoder') and self.prompter.text_encoder is not None:
++            self.prompter.text_encoder = self.prompter.text_encoder.to(local_device)
++        if hasattr(self, 'audio_encoder') and self.audio_encoder is not None:
++            self.audio_encoder = self.audio_encoder.to(local_device)
++
++        # 更新 pipeline 的设备属性
++        self.device = local_device
++
++        # 设置 USP 的 forward 方法
+         for block in self.dit.blocks:
+             block.self_attn.forward = types.MethodType(usp_attn_forward, block.self_attn)
+         self.dit.forward = types.MethodType(usp_dit_forward, self.dit)
+@@ -1724,28 +1756,48 @@ def model_fn_wan_video(
+                                             get_sequence_parallel_world_size,
+                                             get_sp_group)
+ 
+-    # Timestep 
++    # 获取 DiT 模型的实际设备，用于 USP 模式下的设备一致性
++    try:
++        dit_device = next(dit.parameters()).device
++    except StopIteration:
++        dit_device = latents.device
++
++    # Timestep
++    # 注意：如果有 reference_latents，需要在 timestep 中额外添加一帧（零时间步），以确保 t_mod 与 x 的序列长度一致
++    has_reference = reference_latents is not None
+     if dit.seperated_timestep and fuse_vae_embedding_in_latents:
+-        timestep = torch.concat([
+-            torch.zeros((1, latents.shape[3] * latents.shape[4] // 4), dtype=latents.dtype, device=latents.device),
+-            torch.ones((latents.shape[2] - 1, latents.shape[3] * latents.shape[4] // 4), dtype=latents.dtype, device=latents.device) * timestep
+-        ]).flatten()
+-        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep).unsqueeze(0))
+-        if use_unified_sequence_parallel and dist.is_initialized() and dist.get_world_size() > 1:
+-            t_chunks = torch.chunk(t, get_sequence_parallel_world_size(), dim=1)
+-            t_chunks = [torch.nn.functional.pad(chunk, (0, 0, 0, t_chunks[0].shape[1]-chunk.shape[1]), value=0) for chunk in t_chunks]
+-            t = t_chunks[get_sequence_parallel_rank()]
++        # 计算每帧的 token 数量
++        tokens_per_frame = latents.shape[3] * latents.shape[4] // 4
++
++        # 构建 timestep 序列
++        timestep_parts = []
++        if has_reference:
++            # reference frame 使用零时间步
++            timestep_parts.append(torch.zeros((1, tokens_per_frame), dtype=latents.dtype, device=latents.device))
++        # 第一帧（非 reference）使用零时间步
++        timestep_parts.append(torch.zeros((1, tokens_per_frame), dtype=latents.dtype, device=latents.device))
++        # 其余帧使用实际 timestep
++        timestep_parts.append(torch.ones((latents.shape[2] - 1, tokens_per_frame), dtype=latents.dtype, device=latents.device) * timestep)
++        timestep = torch.concat(timestep_parts).flatten()
++
++        # 确保 sinusoidal embedding 在 DiT 模型设备上
++        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep).to(dit_device).unsqueeze(0))
++        # USP 分割移动到 x 分割之后，确保使用相同的 padding 方式
+         t_mod = dit.time_projection(t).unflatten(2, (6, dit.dim))
+     else:
+-        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
++        # 确保 sinusoidal embedding 在 DiT 模型设备上
++        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep).to(dit_device))
+         t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
+     
+     # Motion Controller
+     if motion_bucket_id is not None and motion_controller is not None:
+         t_mod = t_mod + motion_controller(motion_bucket_id).unflatten(1, (6, dit.dim))
+-    context = dit.text_embedding(context)
+ 
+-    x = latents
++    # 确保 context 在 DiT 设备上
++    context = dit.text_embedding(context.to(dit_device))
++
++    # 确保 latents 在 DiT 设备上
++    x = latents.to(dit_device)
+     # Merged cfg
+     if x.shape[0] != context.shape[0]:
+         x = torch.concat([x] * context.shape[0], dim=0)
+@@ -1755,17 +1807,19 @@ def model_fn_wan_video(
+     # Image Embedding
+     if y is not None and dit.require_vae_embedding:
+         assert False # should be skipped
+-        x = torch.cat([x, y], dim=1) 
++        x = torch.cat([x, y.to(dit_device)], dim=1)
+     if clip_feature is not None and dit.require_clip_embedding:
+         assert False # should be skipped
+-        clip_embdding = dit.img_emb(clip_feature)
++        clip_embdding = dit.img_emb(clip_feature.to(dit_device))
+         context = torch.cat([clip_embdding, context], dim=1)
+ 
+-    # Add camera control
+-    x, (f, h, w) = dit.patchify(x, control_camera_latents_input)
++    # Add camera control - 确保 control_camera_latents_input 在 DiT 设备上
++    control_camera_on_device = control_camera_latents_input.to(dit_device) if control_camera_latents_input is not None else None
++    x, (f, h, w) = dit.patchify(x, control_camera_on_device)
+     
+-    # Reference image
++    # Reference image - 确保 reference_latents 在 DiT 设备上
+     if reference_latents is not None:
++        reference_latents = reference_latents.to(dit_device)
+         if len(reference_latents.shape) == 5:
+             reference_latents = reference_latents[:, :, 0]
+         reference_latents = dit.ref_conv(reference_latents).flatten(2).transpose(1, 2)
+@@ -1796,12 +1850,21 @@ def model_fn_wan_video(
+     
+     # blocks
+     if use_unified_sequence_parallel:
+-        assert False
+         if dist.is_initialized() and dist.get_world_size() > 1:
++            # 分割 x
+             chunks = torch.chunk(x, get_sequence_parallel_world_size(), dim=1)
+             pad_shape = chunks[0].shape[1] - chunks[-1].shape[1]
+             chunks = [torch.nn.functional.pad(chunk, (0, 0, 0, chunks[0].shape[1]-chunk.shape[1]), value=0) for chunk in chunks]
+             x = chunks[get_sequence_parallel_rank()]
++
++            # 如果 t_mod 有序列维度（seperated_timestep=True），也需要分割
++            if len(t_mod.shape) == 4:  # (b, seq, 6, dim)
++                t_chunks = torch.chunk(t_mod, get_sequence_parallel_world_size(), dim=1)
++                # t_mod 形状是 (b, seq, 6, dim)，padding 在 seq 维度（dim=1）
++                # torch.nn.functional.pad 从最后一个维度开始：(dim, dim, 6_dim, 6_dim, seq, seq, batch, batch)
++                t_pad_size = chunks[0].shape[1] - t_chunks[-1].shape[1]
++                t_chunks = [torch.nn.functional.pad(chunk, (0, 0, 0, 0, 0, t_pad_size), value=0) for chunk in t_chunks]
++                t_mod = t_chunks[get_sequence_parallel_rank()]
+     if tea_cache_update:
+         x = tea_cache.update(x)
+     else:
+@@ -1835,6 +1898,13 @@ def model_fn_wan_video(
+                 x = x + current_vace_hint * vace_scale
+         if tea_cache is not None:
+             tea_cache.store(x)
++
++    # USP: 在调用 head 之前需要 all-gather x
++    if use_unified_sequence_parallel:
++        if dist.is_initialized() and dist.get_world_size() > 1:
++            x = get_sp_group().all_gather(x, dim=1)
++            x = x[:, :-pad_shape] if pad_shape > 0 else x
++
+     if use_dual_head:
+         x_rgb=dit.head_rgb(x,t)
+         x_heatmap=dit.head_heatmap(x,t)
+@@ -1844,10 +1914,6 @@ def model_fn_wan_video(
+         return x
+     else:
+         x = dit.head(x, t)
+-    if use_unified_sequence_parallel:
+-        if dist.is_initialized() and dist.get_world_size() > 1:
+-            x = get_sp_group().all_gather(x, dim=1)
+-            x = x[:, :-pad_shape] if pad_shape > 0 else x
+     # Remove reference latents
+     if reference_latents is not None:
+         x = x[:, reference_latents.shape[1]:]
+@@ -1874,6 +1940,23 @@ def model_fn_wans2v(
+         from xfuser.core.distributed import (get_sequence_parallel_rank,
+                                             get_sequence_parallel_world_size,
+                                             get_sp_group)
++
++    # 获取 DiT 模型的实际设备，用于 USP 模式下的设备一致性
++    try:
++        dit_device = next(dit.parameters()).device
++    except StopIteration:
++        dit_device = latents.device
++
++    # 确保所有输入张量在 DiT 设备上
++    latents = latents.to(dit_device)
++    context = context.to(dit_device)
++    if audio_embeds is not None:
++        audio_embeds = audio_embeds.to(dit_device)
++    if motion_latents is not None:
++        motion_latents = motion_latents.to(dit_device)
++    if s2v_pose_latents is not None:
++        s2v_pose_latents = s2v_pose_latents.to(dit_device)
++
+     origin_ref_latents = latents[:, :, 0:1]
+     x = latents[:, :, 1:]
+ 
+@@ -1903,7 +1986,8 @@ def model_fn_wans2v(
+ 
+     # tmod
+     timestep = torch.cat([timestep, torch.zeros([1], dtype=timestep.dtype, device=timestep.device)])
+-    t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
++    # 确保 sinusoidal embedding 在 DiT 模型设备上
++    t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep).to(dit_device))
+     t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim)).unsqueeze(2).transpose(0, 2)
+ 
+     if use_unified_sequence_parallel and dist.is_initialized() and dist.get_world_size() > 1:
+diff --git a/diffsynth/prompters/wan_prompter.py b/diffsynth/prompters/wan_prompter.py
+index 01a765d..1f9d1a6 100644
+--- a/diffsynth/prompters/wan_prompter.py
++++ b/diffsynth/prompters/wan_prompter.py
+@@ -98,10 +98,19 @@ class WanPrompter(BasePrompter):
+ 
+     def encode_prompt(self, prompt, positive=True, device="cuda"):
+         prompt = self.process_prompt(prompt, positive=positive)
+-        
++
+         ids, mask = self.tokenizer(prompt, return_mask=True, add_special_tokens=True)
+-        ids = ids.to(device)
+-        mask = mask.to(device)
++        # 使用 text_encoder 所在的设备，而不是传入的 device
++        # 这在序列并行 (USP) 模式下很重要，因为不同进程使用不同 GPU
++        if self.text_encoder is not None:
++            try:
++                encoder_device = next(self.text_encoder.parameters()).device
++            except StopIteration:
++                encoder_device = device
++        else:
++            encoder_device = device
++        ids = ids.to(encoder_device)
++        mask = mask.to(encoder_device)
+         seq_lens = mask.gt(0).sum(dim=1).long()
+         prompt_emb = self.text_encoder(ids, mask)
+         for i, v in enumerate(seq_lens):
+diff --git a/examples/wanvideo/model_inference/heatmap_inference_TI2V_5B_fused_mv_rot_grip_vae_decode_feature_3zed.py b/examples/wanvideo/model_inference/heatmap_inference_TI2V_5B_fused_mv_rot_grip_vae_decode_feature_3zed.py
+index 73ab517..5938d08 100644
+--- a/examples/wanvideo/model_inference/heatmap_inference_TI2V_5B_fused_mv_rot_grip_vae_decode_feature_3zed.py
++++ b/examples/wanvideo/model_inference/heatmap_inference_TI2V_5B_fused_mv_rot_grip_vae_decode_feature_3zed.py
+@@ -65,7 +65,8 @@ class HeatmapInferenceMVRotGrip:
+                  num_rotation_bins: int = 72,
+                  num_history_frames: int = 1,
+                  local_feat_size: int = 5,
+-                 use_initial_gripper_state: bool = False):
++                 use_initial_gripper_state: bool = False,
++                 use_usp: bool = False):
+         """
+         初始化多视角推断器 + 旋转和夹爪预测器
+ 
+@@ -83,6 +84,7 @@ class HeatmapInferenceMVRotGrip:
+             num_history_frames: 历史帧数量（1, 2, 或 1+4N）
+             local_feat_size: 局部特征提取的邻域大小
+             use_initial_gripper_state: 是否使用初始夹爪状态作为输入（必须与训练时保持一致）
++            use_usp: 是否使用Unified Sequence Parallel（多卡序列并行加速）
+         """
+         self.device = device
+         self.torch_dtype = torch_dtype
+@@ -138,6 +140,7 @@ class HeatmapInferenceMVRotGrip:
+             device=device,
+             wan_type=wan_type,
+             use_dual_head=use_dual_head,
++            use_usp=use_usp,
+             model_configs=[
+                 ModelConfig(path=[
+                     f"{model_base_path}/diffusion_pytorch_model-00001-of-00003.safetensors",
+@@ -190,6 +193,40 @@ class HeatmapInferenceMVRotGrip:
+         print(f"Loading rotation/gripper predictor checkpoint: {rot_grip_checkpoint_path}")
+         self.load_rot_grip_checkpoint(rot_grip_checkpoint_path)
+ 
++        # ==============================================
++        # 性能优化：TF32 和 torch.compile
++        # ==============================================
++        # 启用 TF32 加速 (A100/RTX 30/40 系列)
++        torch.backends.cuda.matmul.allow_tf32 = True
++        torch.backends.cudnn.allow_tf32 = True
++        torch.backends.cudnn.benchmark = True
++        print("✓ TF32 and cuDNN benchmark enabled")
++
++        # torch.compile 预编译（通过环境变量控制）
++        compile_enabled = os.environ.get("TORCH_COMPILE_ENABLED", "true").lower() == "true"
++        compile_mode = os.environ.get("TORCH_COMPILE_MODE", "reduce-overhead")
++
++        if compile_enabled and torch.cuda.is_available():
++            try:
++                print(f"Compiling models with torch.compile (mode={compile_mode})...")
++                # 编译 DiT 模型（主要的计算瓶颈）
++                self.pipe.dit = torch.compile(self.pipe.dit, mode=compile_mode)
++                print("  ✓ DiT model compiled")
++
++                # 编译旋转夹爪预测器
++                self.rot_grip_predictor = torch.compile(self.rot_grip_predictor, mode=compile_mode)
++                print("  ✓ Rotation/Gripper predictor compiled")
++
++                # VAE decoder 编译（可选，取消注释启用）
++                # self.vae_decode_intermediate = torch.compile(self.vae_decode_intermediate, mode=compile_mode)
++                # print("  ✓ VAE decoder compiled")
++
++                print("✓ Model compilation completed (first inference will be slower)")
++            except Exception as e:
++                print(f"⚠ torch.compile failed, falling back to eager mode: {e}")
++        else:
++            print(f"ℹ torch.compile disabled (TORCH_COMPILE_ENABLED={compile_enabled})")
++
+         print("Pipeline initialized successfully!")
+ 
+     def _decode_latents_with_history(self, latents, return_full_image=False):
+@@ -2456,6 +2493,10 @@ def main():
+     parser.add_argument("--img_size", type=str, default="256,256",
+                        help='Image size as comma-separated values: height,width (default: 256,256)')
+ 
++    # 多卡并行配置
++    parser.add_argument("--use_usp", action='store_true',
++                       help='Use Unified Sequence Parallel for multi-GPU single-sample inference')
++
+     args = parser.parse_args()
+ 
+     # 解析逗号分隔的参数
+@@ -2468,16 +2509,27 @@ def main():
+     if len(args.img_size) != 2:
+         raise ValueError(f"img_size must have 2 values (height,width), got {len(args.img_size)}")
+ 
+-    print("=== Multi-View Rotation/Gripper Inference Test ===")
+-    print(f"LoRA Checkpoint: {args.lora_checkpoint}")
+-    print(f"Rotation/Gripper Checkpoint: {args.rot_grip_checkpoint}")
+-    print(f"Model Type: {args.wan_type}")
+-    print(f"Dual Head Mode: {args.use_dual_head}")
+-    print(f"Data Root: {args.data_root}")
+-    print(f"Output Dir: {args.output_dir}")
+-    print()
+-
+-    # 创建推理器
++    # 判断是否是分布式环境的主进程
++    import torch.distributed as dist
++    is_main_process = True
++    if args.use_usp:
++        if dist.is_initialized():
++            is_main_process = dist.get_rank() == 0
++        else:
++            is_main_process = int(os.environ.get("RANK", 0)) == 0
++
++    if is_main_process:
++        print("=== Multi-View Rotation/Gripper Inference Test ===")
++        print(f"LoRA Checkpoint: {args.lora_checkpoint}")
++        print(f"Rotation/Gripper Checkpoint: {args.rot_grip_checkpoint}")
++        print(f"Model Type: {args.wan_type}")
++        print(f"Dual Head Mode: {args.use_dual_head}")
++        print(f"Data Root: {args.data_root}")
++        print(f"Output Dir: {args.output_dir}")
++        print(f"Use USP (Sequence Parallel): {args.use_usp}")
++        print()
++
++    # 创建推理器（use_usp会在from_pretrained中自动初始化USP）
+     inferencer = HeatmapInferenceMVRotGrip(
+         lora_checkpoint_path=args.lora_checkpoint,
+         rot_grip_checkpoint_path=args.rot_grip_checkpoint,
+@@ -2491,9 +2543,14 @@ def main():
+         num_rotation_bins=args.num_rotation_bins,
+         num_history_frames=args.num_history_frames,
+         local_feat_size=args.local_feat_size,
+-        use_initial_gripper_state=args.use_initial_gripper_state
++        use_initial_gripper_state=args.use_initial_gripper_state,
++        use_usp=args.use_usp
+     )
+ 
++    # USP已在from_pretrained中自动初始化和启用
++    if args.use_usp and is_main_process:
++        print(f"✓ USP enabled with {inferencer.pipe.sp_size} GPUs")
++
+     # 解析测试索引
+     test_indices = [int(x.strip()) for x in args.test_indices.split(',')]
+     print(f"Test indices: {test_indices}")
+diff --git a/examples/wanvideo/model_inference/run_heatmap_inference_mv_rot_grip_vae_decode_3zed.sh b/examples/wanvideo/model_inference/run_heatmap_inference_mv_rot_grip_vae_decode_3zed.sh
+index c3670f3..c789c9d 100755
+--- a/examples/wanvideo/model_inference/run_heatmap_inference_mv_rot_grip_vae_decode_3zed.sh
++++ b/examples/wanvideo/model_inference/run_heatmap_inference_mv_rot_grip_vae_decode_3zed.sh
+@@ -241,9 +241,30 @@ TEST_INDICES="255,555,705,805,905"
+ OUTPUT_DIR="${ROOT_PATH}/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_results/5B_TI2V_MV_ROT_GRIP"
+ 
+ # ==============================================
+-# GPU配置
++# GPU配置与多卡模式
+ # ==============================================
+-export CUDA_VISIBLE_DEVICES=1
++CUDA_DEVICES="0,1"  # 可用的GPU列表
++
++# 多卡模式选择:
++#   - "single": 单卡推理（使用第一个GPU）
++#   - "data_parallel": 数据并行（多个样本分配到多个GPU，适合多样本批处理）
++#   - "sequence_parallel": 序列并行/USP（单个样本分布到多个GPU，适合单样本加速）
++MULTI_GPU_MODE="sequence_parallel"
++
++# ==============================================
++# CUDA 和 PyTorch 性能优化
++# ==============================================
++export CUDA_LAUNCH_BLOCKING=0
++export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
++export NVIDIA_TF32_OVERRIDE=1
++export TORCH_COMPILE_ENABLED=${TORCH_COMPILE_ENABLED:-true}
++export TORCH_COMPILE_MODE=${TORCH_COMPILE_MODE:-"reduce-overhead"}
++
++echo "✓ Performance optimizations enabled:"
++echo "  - TF32: enabled"
++echo "  - torch.compile: ${TORCH_COMPILE_ENABLED} (mode: ${TORCH_COMPILE_MODE})"
++echo "  - Multi-GPU mode: ${MULTI_GPU_MODE} (devices: ${CUDA_DEVICES})"
++echo ""
+ 
+ # ==============================================
+ # 打印配置信息
+@@ -351,11 +372,163 @@ fi
+ # printf '%s\n' "${PYTHON_ARGS[@]}"
+ # echo ""
+ 
+-# 执行推理（使用VAE decode feature版本）
+-python3 "${ROOT_PATH}/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_TI2V_5B_fused_mv_rot_grip_vae_decode_feature_3zed.py" "${PYTHON_ARGS[@]}"
++# ==============================================
++# 执行推理（根据多卡模式选择）
++# ==============================================
+ 
+-echo ""
+-echo "================================"
+-echo "Inference completed!"
+-echo "Results saved to: $OUTPUT_DIR"
+-echo "================================"
++INFERENCE_SCRIPT="${ROOT_PATH}/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_TI2V_5B_fused_mv_rot_grip_vae_decode_feature_3zed.py"
++
++case "$MULTI_GPU_MODE" in
++    "sequence_parallel")
++        # ==============================================
++        # 序列并行模式 (USP) - 单样本多卡加速
++        # 需要: Python >= 3.10 和 xfuser 库
++        # ==============================================
++        echo "================================"
++        echo "Sequence Parallel (USP) Mode"
++        echo "================================"
++
++        # 检查 Python 版本
++        PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
++        PYTHON_MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
++        PYTHON_MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
++
++        if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
++            echo "✗ Error: sequence_parallel mode requires Python >= 3.10"
++            echo "  Current Python version: $PYTHON_VERSION"
++            echo ""
++            echo "Please either:"
++            echo "  1. Upgrade Python to >= 3.10"
++            echo "  2. Set MULTI_GPU_MODE to 'single' or 'data_parallel'"
++            exit 1
++        fi
++
++        # 检查 xfuser 是否安装
++        if ! python3 -c "import xfuser" 2>/dev/null; then
++            echo "✗ Error: xfuser library not installed"
++            echo "  Install with: pip install xfuser"
++            exit 1
++        fi
++
++        IFS=',' read -ra GPU_ARRAY <<< "$CUDA_DEVICES"
++        NUM_GPUS=${#GPU_ARRAY[@]}
++        echo "Number of GPUs: $NUM_GPUS"
++        echo "GPU IDs: ${GPU_ARRAY[*]}"
++
++        export CUDA_VISIBLE_DEVICES="$CUDA_DEVICES"
++
++        # 添加USP参数
++        PYTHON_ARGS+=(--use_usp)
++
++        # 使用 torchrun 启动分布式推理
++        torchrun --nproc_per_node=$NUM_GPUS \
++            --master_port=29501 \
++            "$INFERENCE_SCRIPT" "${PYTHON_ARGS[@]}"
++        ;;
++
++    "data_parallel")
++        # ==============================================
++        # 数据并行模式 - 多样本分配到多GPU
++        # ==============================================
++        echo "================================"
++        echo "Data Parallel Mode"
++        echo "================================"
++
++        IFS=',' read -ra GPU_ARRAY <<< "$CUDA_DEVICES"
++        NUM_GPUS=${#GPU_ARRAY[@]}
++        IFS=',' read -ra INDEX_ARRAY <<< "$TEST_INDICES"
++        NUM_INDICES=${#INDEX_ARRAY[@]}
++
++        echo "Number of GPUs: $NUM_GPUS"
++        echo "Total test indices: $NUM_INDICES"
++
++        INDICES_PER_GPU=$(( (NUM_INDICES + NUM_GPUS - 1) / NUM_GPUS ))
++        TEMP_OUTPUT_BASE="${OUTPUT_DIR}/data_parallel_temp_$(date +%Y%m%d_%H%M%S)"
++        mkdir -p "$TEMP_OUTPUT_BASE"
++
++        PIDS=()
++        for gpu_idx in "${!GPU_ARRAY[@]}"; do
++            GPU_ID="${GPU_ARRAY[$gpu_idx]}"
++            START_IDX=$((gpu_idx * INDICES_PER_GPU))
++            END_IDX=$((START_IDX + INDICES_PER_GPU))
++            [ $END_IDX -gt $NUM_INDICES ] && END_IDX=$NUM_INDICES
++            [ $START_IDX -ge $NUM_INDICES ] && continue
++
++            GPU_INDICES=""
++            for ((i=START_IDX; i<END_IDX; i++)); do
++                [ -n "$GPU_INDICES" ] && GPU_INDICES="${GPU_INDICES},"
++                GPU_INDICES="${GPU_INDICES}${INDEX_ARRAY[$i]}"
++            done
++
++            GPU_OUTPUT_DIR="${TEMP_OUTPUT_BASE}/gpu_${GPU_ID}"
++            mkdir -p "$GPU_OUTPUT_DIR"
++            echo "GPU $GPU_ID: indices $GPU_INDICES"
++
++            GPU_ARGS=(
++                --lora_checkpoint "$LORA_CHECKPOINT"
++                --rot_grip_checkpoint "$ROT_GRIP_CHECKPOINT"
++                --model_base_path "$MODEL_BASE_PATH"
++                --wan_type "$WAN_TYPE"
++                --output_dir "$GPU_OUTPUT_DIR"
++                --data_root "$DATA_ROOT"
++                --scene_bounds="$SCENE_BOUNDS"
++                --transform_augmentation_xyz="$TRANSFORM_AUG_XYZ"
++                --transform_augmentation_rpy="$TRANSFORM_AUG_RPY"
++                --sequence_length $SEQUENCE_LENGTH
++                --img_size "$IMG_SIZE"
++                --test_indices "$GPU_INDICES"
++                --rotation_resolution $ROTATION_RESOLUTION
++                --hidden_dim $HIDDEN_DIM
++                --num_rotation_bins $NUM_ROTATION_BINS
++                --num_history_frames $NUM_HISTORY_FRAMES
++                --local_feat_size $LOCAL_FEAT_SIZE
++                --device "cuda"
++            )
++            [ "$USE_DUAL_HEAD" = "true" ] && GPU_ARGS+=(--use_dual_head)
++            [ "$USE_MERGED_POINTCLOUD" = "true" ] && GPU_ARGS+=(--use_merged_pointcloud)
++            [ "$USE_DIFFERENT_PROJECTION" = "true" ] && GPU_ARGS+=(--use_different_projection)
++            [ "$USE_INITIAL_GRIPPER_STATE" = "true" ] && GPU_ARGS+=(--use_initial_gripper_state)
++
++            CUDA_VISIBLE_DEVICES=$GPU_ID python3 "$INFERENCE_SCRIPT" "${GPU_ARGS[@]}" \
++                > "${GPU_OUTPUT_DIR}/inference.log" 2>&1 &
++            PIDS+=($!)
++        done
++
++        echo "Waiting for all GPU processes (PIDs: ${PIDS[*]})..."
++        FAILED=0
++        for pid in "${PIDS[@]}"; do
++            wait $pid || FAILED=$((FAILED + 1))
++        done
++
++        # 合并结果
++        for gpu_dir in "$TEMP_OUTPUT_BASE"/gpu_*; do
++            [ -d "$gpu_dir" ] && find "$gpu_dir" -type f ! -name "*.log" -exec cp {} "$OUTPUT_DIR/" \;
++        done
++
++        echo "================================"
++        [ $FAILED -eq 0 ] && echo "✓ Data parallel inference completed!" || echo "⚠ Completed with $FAILED failures"
++        echo "Results saved to: $OUTPUT_DIR"
++        echo "================================"
++        ;;
++
++    *)
++        # ==============================================
++        # 单卡模式（默认）
++        # ==============================================
++        echo "================================"
++        echo "Single-GPU Mode"
++        echo "================================"
++
++        IFS=',' read -ra GPU_ARRAY <<< "$CUDA_DEVICES"
++        export CUDA_VISIBLE_DEVICES="${GPU_ARRAY[0]}"
++        echo "Using GPU: $CUDA_VISIBLE_DEVICES"
++
++        python3 "$INFERENCE_SCRIPT" "${PYTHON_ARGS[@]}"
++
++        echo ""
++        echo "================================"
++        echo "Inference completed!"
++        echo "Results saved to: $OUTPUT_DIR"
++        echo "================================"
++        ;;
++esac
+diff --git a/examples/wanvideo/real_inference/RoboWan_server.py b/examples/wanvideo/real_inference/RoboWan_server.py
+index 0f15f7d..12a7bdb 100644
+--- a/examples/wanvideo/real_inference/RoboWan_server.py
++++ b/examples/wanvideo/real_inference/RoboWan_server.py
+@@ -449,6 +449,42 @@ async def startup_event():
+ 
+     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✓ Server initialized successfully!")
+ 
++    # ==============================================
++    # 服务器预热：进行一次 dummy 推理以触发 CUDA kernel 编译
++    # ==============================================
++    warmup_enabled = os.environ.get("WARMUP_ENABLED", "true").lower() == "true"
++    if warmup_enabled:
++        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Warming up model...")
++        try:
++            # 创建 dummy 输入图像
++            dummy_images = [Image.new('RGB', (img_size, img_size), color='black') for _ in range(3)]
++
++            # 执行预热推理（使用较少帧数加快预热速度）
++            warmup_num_frames = min(5, num_frames)
++            _ = server_instance.predict_action(
++                prompt="warmup dummy inference",
++                input_image=dummy_images,
++                input_image_rgb=dummy_images,
++                initial_rotation=[0.0, 0.0, 0.0],
++                initial_gripper=0,
++                num_frames=warmup_num_frames
++            )
++            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✓ Warmup completed (frames={warmup_num_frames})")
++
++            # 清理 CUDA 缓存
++            import torch
++            torch.cuda.empty_cache()
++            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✓ CUDA cache cleared after warmup")
++
++        except Exception as e:
++            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ⚠ Warmup failed (non-critical): {e}")
++            import traceback
++            traceback.print_exc()
++    else:
++        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ℹ Warmup disabled (WARMUP_ENABLED=false)")
++
++    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ✓ Server ready to accept requests!")
++
+ 
+ @app.post("/predict", response_model=PredictResponse)
+ async def predict_action(
+diff --git a/examples/wanvideo/real_inference/run_server.sh b/examples/wanvideo/real_inference/run_server.sh
+index b3e819c..50bf48a 100755
+--- a/examples/wanvideo/real_inference/run_server.sh
++++ b/examples/wanvideo/real_inference/run_server.sh
+@@ -87,6 +87,29 @@ echo "Using MODEL_BASE_PATH: $MODEL_BASE_PATH"
+ echo "✓ Conda environment activated: $(conda info --envs | grep '*' | awk '{print $1}')"
+ echo ""
+ 
++# ==============================================
++# CUDA 和 PyTorch 性能优化
++# ==============================================
++# CUDA 优化
++export CUDA_LAUNCH_BLOCKING=0
++export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
++
++# 启用 TensorFloat32 加速 (A100/RTX 30/40 系列)
++export NVIDIA_TF32_OVERRIDE=1
++
++# torch.compile 配置
++export TORCH_COMPILE_ENABLED=${TORCH_COMPILE_ENABLED:-true}
++export TORCH_COMPILE_MODE=${TORCH_COMPILE_MODE:-"reduce-overhead"}
++
++# 服务器预热配置
++export WARMUP_ENABLED=${WARMUP_ENABLED:-true}
++
++echo "✓ Performance optimizations enabled:"
++echo "  - TF32: enabled"
++echo "  - torch.compile: ${TORCH_COMPILE_ENABLED} (mode: ${TORCH_COMPILE_MODE})"
++echo "  - Warmup: ${WARMUP_ENABLED}"
++echo ""
++
+ # ==============================================
+ # 模型checkpoint配置（各机器共用相对路径）
+ # ==============================================
+@@ -127,10 +150,10 @@ echo ""
+ # ROT_GRIP_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/mv_rot_grip_v2/put_lion_local_feat_size_5_seq_48_history_1_3zed_different_projection_true_new_projection_with_gripper_false_epoch-30.pth"
+ 
+ 
+-LORA_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/from_a100_4/8_trajectory_push_T_3camera_seq_48_push_T_2_pretrain_true_history_1_new_projection_epoch-89.safetensors"
++# LORA_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/from_a100_4/8_trajectory_push_T_3camera_seq_48_push_T_2_pretrain_true_history_1_new_projection_epoch-89.safetensors"
+ ROT_GRIP_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/mv_rot_grip_v2/put_lion_local_feat_size_5_seq_48_history_1_3zed_different_projection_true_new_projection_with_gripper_false/20251218_175815/epoch-90.pth"
+ 
+-
++LORA_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/from_a100_4/8_trajectory_push_T_3camera_seq_12_push_T_1_pretrain_true_history_1_new_projection_epoch-89.safetensors"
+ # ==============================================
+ # 服务器配置
+ # ==============================================
+@@ -149,7 +172,7 @@ NUM_ROTATION_BINS=72
+ LOCAL_FEAT_SIZE=5
+ SCENE_BOUNDS="-0.1,-0.5,-0.1,0.9,0.5,0.9"
+ IMG_SIZE=256  # 图像尺寸，用于投影接口
+-NUM_FRAMES=49  # 总帧数（包括初始帧），必须与训练时的sequence_length+1一致
++NUM_FRAMES=13  # 总帧数（包括初始帧），必须与训练时的sequence_length+1一致
+ DEVICE="cuda:1"
+ HOST="0.0.0.0"
+ PORT=5555
