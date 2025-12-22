@@ -1,11 +1,19 @@
 import pyrealsense2 as rs
-import pyzed.sl as sl
 import numpy as np
 import cv2
 import threading
 from scipy.spatial.transform import Rotation as R
 import time
 import os
+
+# ZED SDK import - only imported when ZED camera classes are used
+# This allows get_cam_extrinsic to work without ZED SDK installed
+try:
+    import pyzed.sl as sl
+    ZED_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    sl = None
+    ZED_AVAILABLE = False
 
 def save_rgb_image(rgb_array, save_path):
     """

@@ -12,7 +12,6 @@ import math
 import point_renderer.ops as ops
 from point_renderer.cameras import OrthographicCameras, PerspectiveCameras
 import point_renderer._C.render as r
-
 from point_renderer.profiler import PerfTimer
 
 
