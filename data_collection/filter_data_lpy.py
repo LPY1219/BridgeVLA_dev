@@ -14,27 +14,45 @@ def load_sample(
 ) -> Dict[str, List]:
    """
    加载样本目录中的所有内容
-  
+
    Args:
        sample_dir: 样本目录路径
        read_content: 是否读取文件内容，False则只返回文件路径
        ext_filter: 文件扩展名过滤器，None表示加载所有文件
-  
+
    Returns:
        字典，key为文件夹名称，value为对应文件夹中内容的列表
    """
+   import time
+   print(f"[DEBUG] load_sample 开始，目录: {sample_dir}")
+   load_start_time = time.time()
    result = {}
-  
+
+   # 获取所有子文件夹列表
+   all_items = os.listdir(sample_dir)
+   subdirs = [item for item in all_items if os.path.isdir(os.path.join(sample_dir, item))]
+   print(f"[DEBUG] 发现 {len(subdirs)} 个子文件夹: {subdirs}")
+
    # 遍历目录中的所有子文件夹
-   for item in os.listdir(sample_dir):
+   for item_idx, item in enumerate(all_items):
        item_path = os.path.join(sample_dir, item)
-      
+
        # 只处理文件夹
        if os.path.isdir(item_path):
            file_list = []
-          
+           dir_start_time = time.time()
+
            # 获取文件夹中的所有文件
-           for file_name in sorted(os.listdir(item_path)):
+           files_in_dir = sorted(os.listdir(item_path))
+           total_files = len(files_in_dir)
+           print(f"[DEBUG]   正在加载子文件夹 '{item}' ({item_idx+1}/{len(subdirs)})，共 {total_files} 个文件...")
+
+           for file_idx, file_name in enumerate(files_in_dir):
+               # 每100个文件打印一次进度
+               if (file_idx + 1) % 100 == 0 or file_idx == total_files - 1:
+                   print(f"[DEBUG]     '{item}' 加载进度: {file_idx+1}/{total_files} ({(file_idx+1)/total_files*100:.1f}%)")
+
+               # 原来的代码从这里开始
                file_path = os.path.join(item_path, file_name)
               
                # 应用扩展名过滤
@@ -90,9 +108,11 @@ def load_sample(
                else:
                    # 不读取内容，只返回文件路径
                    file_list.append(file_path)
-                  
+
 
            result[item] = file_list
+           dir_elapsed = time.time() - dir_start_time
+           print(f"[DEBUG]   子文件夹 '{item}' 加载完成，耗时 {dir_elapsed:.2f}s，共 {len(file_list)} 条数据")
 
    # 读取指令文件
    with open(os.path.join(sample_dir, "instruction.txt"), 'r', encoding='utf-8') as f:
@@ -122,6 +142,8 @@ def load_sample(
        except Exception as e:
            print(f"加载 extrinic.pkl 失败: {e}")
 
+   total_elapsed = time.time() - load_start_time
+   print(f"[DEBUG] load_sample 完成，总耗时 {total_elapsed:.2f}s")
    return result
 
 
@@ -159,16 +181,23 @@ def filter_data(data_path: str, thres_xyz=0.01, thres_rotation_deg=1.0):
     """
     使用累积阈值进行数据过滤
     从保留的数据点开始，向后遍历直到找到满足条件的下一个数据点
-    
+
     Args:
         data_path: 数据路径
         thres_xyz: 位置变化阈值（米）
         thres_rotation_deg: 旋转角度阈值（度）
-    
+
     Returns:
         过滤后的数据字典
     """
+    import time
+    print(f"\n[DEBUG] filter_data 开始，路径: {data_path}")
+    filter_start_time = time.time()
+
+    print(f"[DEBUG] 正在调用 load_sample...")
     data = load_sample(data_path)
+    print(f"[DEBUG] load_sample 返回，开始过滤...")
+
     poses = data['poses']
     gripper_states = data['gripper_states']
     print(f"过滤前时间步数量：{len(poses)}")
@@ -178,9 +207,15 @@ def filter_data(data_path: str, thres_xyz=0.01, thres_rotation_deg=1.0):
     
     keep_indices = [0]  # 始终保留第一个数据点
     last_kept_index = 0  # 上一个保留的数据点索引
-    
+
+    total_poses = len(poses)
+    print(f"[DEBUG] 开始过滤循环，共 {total_poses} 个数据点...")
+
     i = 1
     while i < len(poses):
+        # 每100个数据点打印一次进度
+        if i % 100 == 0:
+            print(f"[DEBUG]   过滤进度: {i}/{total_poses} ({i/total_poses*100:.1f}%)")
         pose_reference = poses[last_kept_index]  # 参考点（上一个保留的点）
         pose_curr = poses[i]
         
@@ -221,6 +256,9 @@ def filter_data(data_path: str, thres_xyz=0.01, thres_rotation_deg=1.0):
     print(f"过滤后时间步数量：{len(filtered_data['poses'])}")
     print(f"过滤掉的数据点: {len(poses) - len(filtered_data['poses'])}")
     print(f"保留比例: {len(filtered_data['poses'])/len(poses)*100:.2f}%")
+
+    filter_elapsed = time.time() - filter_start_time
+    print(f"[DEBUG] filter_data 完成，总耗时 {filter_elapsed:.2f}s")
     return filtered_data
 
       
@@ -242,12 +280,18 @@ def save_collected_data(save_dir: str, data_dict, trail_id: int):
     import pickle as pkl
     import numpy as np
     import cv2
+    import time
+
+    print(f"\n[DEBUG] save_collected_data 开始，保存目录: {save_dir}, trail_id: {trail_id}")
+    save_start_time = time.time()
 
     out_trail_dir = os.path.join(save_dir, f"trail_{trail_id}")
+    print(f"[DEBUG] 创建输出目录: {out_trail_dir}")
     os.makedirs(out_trail_dir, exist_ok=False)
 
     # 以 poses 的长度为准
     actual_length = len(data_dict['poses'])
+    print(f"[DEBUG] 待保存数据帧数: {actual_length}")
 
     # 写指令（若存在且为字符串）
     instr = data_dict.get('instruction', None)
@@ -297,30 +341,44 @@ def save_collected_data(save_dir: str, data_dict, trail_id: int):
                 img_to_save = np.clip(img_to_save, 0, 255).astype(np.uint8)
         cv2.imwrite(img_path, img_to_save)
 
-    for dir_name in dir_names:
+    # 统计需要保存的目录数量
+    dirs_to_save = [d for d in dir_names if d in data_dict]
+    print(f"[DEBUG] 需要保存 {len(dirs_to_save)} 个目录: {dirs_to_save}")
+
+    for dir_idx, dir_name in enumerate(dir_names):
         if dir_name not in data_dict:
             continue
 
         dir_path = os.path.join(out_trail_dir, dir_name)
         os.makedirs(dir_path, exist_ok=True)
 
+        dir_save_start = time.time()
+
         # 图片目录：逐帧写 PNG（做 RGB->BGR 转换）
         if 'bgr_images' in dir_name:
-            print(f"正在保存 {dir_name} 图像文件")
+            print(f"[DEBUG] 正在保存 {dir_name} 图像文件 ({dir_idx+1}/{len(dirs_to_save)})...")
             seq = data_dict[dir_name]
             for i in range(actual_length):
+                if (i + 1) % 50 == 0 or i == actual_length - 1:
+                    print(f"[DEBUG]   {dir_name} 保存进度: {i+1}/{actual_length} ({(i+1)/actual_length*100:.1f}%)")
                 img_path = os.path.join(dir_path, f"{i:06d}.png")
                 _write_png(img_path, seq[i])
 
         # 其余目录：逐帧写 PKL
         else:
-            print(f"正在保存 {dir_name} 数组")
+            print(f"[DEBUG] 正在保存 {dir_name} PKL文件 ({dir_idx+1}/{len(dirs_to_save)})...")
             seq = data_dict[dir_name]
             for i in range(actual_length):
+                if (i + 1) % 50 == 0 or i == actual_length - 1:
+                    print(f"[DEBUG]   {dir_name} 保存进度: {i+1}/{actual_length} ({(i+1)/actual_length*100:.1f}%)")
                 with open(os.path.join(dir_path, f"{i:06d}.pkl"), 'wb') as f:
                     pkl.dump(seq[i], f, protocol=pkl.HIGHEST_PROTOCOL)
 
+        dir_save_elapsed = time.time() - dir_save_start
+        print(f"[DEBUG]   {dir_name} 保存完成，耗时 {dir_save_elapsed:.2f}s")
 
+    total_save_elapsed = time.time() - save_start_time
+    print(f"[DEBUG] save_collected_data 完成，总耗时 {total_save_elapsed:.2f}s")
 
 
 
@@ -347,12 +405,19 @@ def batch_filter_data(source_dir: str, target_dir: str, thres_xyz=0.01, thres_ro
     trail_folders.sort(key=lambda x: int(x.split('_')[1]))
     
     print(f"发现 {len(trail_folders)} 个trail文件夹: {trail_folders}")
-    
+
     # 批量处理每个trail
+    import time
+    batch_start_time = time.time()
     success_count = 0
     failed_trails = []
-    
-    for trail_folder in trail_folders:
+    total_trails = len(trail_folders)
+
+    for trail_idx, trail_folder in enumerate(trail_folders):
+        trail_start_time = time.time()
+        print(f"\n{'#'*60}")
+        print(f"[DEBUG] 开始处理 trail {trail_idx+1}/{total_trails}: {trail_folder}")
+        print(f"{'#'*60}")
         try:
             # 提取trail编号
             trail_id = int(trail_folder.split('_')[1])
@@ -373,18 +438,30 @@ def batch_filter_data(source_dir: str, target_dir: str, thres_xyz=0.01, thres_ro
             
             # 保存过滤后的数据
             save_collected_data(save_dir=target_dir, data_dict=filtered_data, trail_id=trail_id)
-            
-            print(f"✅ {trail_folder} 处理完成")
+
+            trail_elapsed = time.time() - trail_start_time
+            print(f"\n✅ {trail_folder} 处理完成，耗时 {trail_elapsed:.2f}s")
             success_count += 1
-            
+
+            # 预估剩余时间
+            avg_time_per_trail = (time.time() - batch_start_time) / (trail_idx + 1)
+            remaining_trails = total_trails - trail_idx - 1
+            estimated_remaining = avg_time_per_trail * remaining_trails
+            print(f"[DEBUG] 进度: {trail_idx+1}/{total_trails}，预计剩余时间: {estimated_remaining/60:.1f} 分钟")
+
         except Exception as e:
+            import traceback
             print(f"❌ 处理 {trail_folder} 时出错: {e}")
+            print(f"[DEBUG] 详细错误信息:")
+            traceback.print_exc()
             failed_trails.append(trail_folder)
             continue
     
+    total_batch_elapsed = time.time() - batch_start_time
     print(f"\n{'='*50}")
     print(f"批量处理完成!")
     print(f"成功处理: {success_count}/{len(trail_folders)} 个trail")
+    print(f"总耗时: {total_batch_elapsed/60:.2f} 分钟")
     if failed_trails:
         print(f"处理失败的trail: {failed_trails}")
     print(f"{'='*50}")
@@ -402,8 +479,8 @@ if __name__ == "__main__":
 
     # 批量处理示例 - 新格式（3个第三视角相机）
     batch_filter_data(
-        source_dir="/media/casia/data4/lpy/3zed_data/raw_data_4/push_T",  # 新格式：3个第三视角相机
-        target_dir="/media/casia/data4/lpy/3zed_data/filter_data_4/push_T",
+        source_dir="/media/casia/data4/lpy/3zed_data/raw_data_4/push_T_4",  # 新格式：3个第三视角相机
+        target_dir="/media/casia/data4/lpy/3zed_data/filter_data_4/push_T_4",
         thres_xyz=0.01,
         thres_rotation_deg=3.0
     )
