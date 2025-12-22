@@ -446,7 +446,7 @@ class Camera:
             
 if __name__ == "__main__":
     # 测试所有三个相机
-    test_camera_type = "3rd_1"  # 使用所有三个相机
+    test_camera_type = "3rd_3"  # 使用所有三个相机
 
     cameras = Camera(camera_type=test_camera_type)
 
