@@ -55,7 +55,7 @@ except ImportError:
    pynput_available = False
 
 
-from input_device.spacemouse import FrankaSpacemouse
+from input_device.sapcemouse_cook import FrankaSpacemouse
 from shared_memory.shared_memory_queue import SharedMemoryQueue
 from shared_memory.shared_ndarray import SharedNDArray
 from real_camera_utils_lpy import Camera
@@ -100,14 +100,14 @@ class CollectDataWithTeleop2:
            raise ValueError(f"不支持的分辨率类型: {resolution}，请使用 'HD1080' 或 'VGA'")
 
        # 目标关节位置（push_t任务的初始状态）
-       self.target_joints_push_t = np.array([-0.31877957,0.17202022,-0.59794134,-2.3979113,0.18720852,2.52827357,-0.27203674])
+       self.target_joints_cook = np.array([1.684841132467561, 0.8842280307586431, -1.7218389136359598, -1.8827389188329948, 0.8921751896732253, 1.673525678267762, 2.165940937432027])
 
        # 初始化或复用机械臂
        if fa is None:
            rospy.loginfo("[Robot] 初始化机械臂（禁用gripper）...")
            self.fa = FrankaArm(with_gripper=False)
            rospy.loginfo("[Robot] 将机械臂移动到push_t初始状态...")
-           self.reset_joints_push_t()
+           self.reset_joints_cook()
            self.fa_is_owned = True  # 标记机械臂是否由此对象创建
        else:
            rospy.loginfo("[Robot] 复用已初始化的机械臂...")
@@ -117,10 +117,6 @@ class CollectDataWithTeleop2:
        self.current_pose = self.fa.get_pose()
        # 暂存的目标动作，用于后续通过ros向机械臂传输动作
        self.target_pose = self.current_pose.copy()
-
-       # 记录初始z轴高度（push_t任务中保持不变）
-       self.initial_z = self.target_pose.translation[2]
-       rospy.loginfo(f"[Robot] 初始z轴高度: {self.initial_z:.4f}m (已锁定)")
 
        # 初始化或复用相机
        if camera is None:
@@ -169,13 +165,13 @@ class CollectDataWithTeleop2:
        #* 数据存储功能
        self.data_arrays: Dict[str, SharedNDArray] = {} # 存储机械臂状态相关内容
 
-   def reset_joints_push_t(self):
+   def reset_joints_cook(self):
        """将机械臂重置到push_t任务的初始关节状态"""
-       rospy.loginfo(f"[Robot] 目标关节位置: {self.target_joints_push_t}")
+       rospy.loginfo(f"[Robot] 目标关节位置: {self.target_joints_cook}")
        try:
            # 将机械臂移动到目标关节位置
            self.fa.goto_joints(
-               self.target_joints_push_t.tolist(),
+               self.target_joints_cook.tolist(),
                duration=5.0,
                ignore_virtual_walls=True
            )
@@ -189,7 +185,7 @@ class CollectDataWithTeleop2:
            rospy.loginfo(f"[Robot] 当前关节位置: {current_joints}")
 
        except Exception as e:
-           rospy.logerr(f"reset_joints_push_t 失败: {e}")
+           rospy.logerr(f"reset_joints_cook 失败: {e}")
            raise
 
    def setup_shared_arrays(self, shm_manager: SharedMemoryManager):
@@ -438,9 +434,8 @@ class CollectDataWithTeleop2:
                rospy.loginfo("[OK] 键盘监听已启动")
 
            rospy.loginfo("[Control] 控制说明:")
-           rospy.loginfo("  - SpaceMouse: 控制机械臂移动（XY平移 + 旋转）")
+           rospy.loginfo("  - SpaceMouse: 控制机械臂移动（XYZ平移 + 旋转）")
            rospy.loginfo("  - 'R' 键: 开始/停止录制")
-           rospy.loginfo("  - 约束: Z轴高度固定不变")
            rospy.loginfo("  - 注意: 夹爪已禁用")
            rospy.loginfo("  - Ctrl+C: 停止采集")
            rospy.loginfo("="*50)
@@ -454,7 +449,7 @@ class CollectDataWithTeleop2:
                        duration=self.duration,
                        dynamic=True,
                        buffer_time=10,
-                       cartesian_impedances=[600.0, 600.0, 800.0, 50.0, 50.0, 50.0]  # xy=600(流畅), z=800(适中), 旋转=50(柔顺)
+                       cartesian_impedances=[600.0, 600.0, 600.0, 50.0, 50.0, 50.0]  # xy=600(流畅), z=800(适中), 旋转=50(柔顺)
                    )
                   
                    start_time = time.time()
@@ -472,7 +467,6 @@ class CollectDataWithTeleop2:
                        motion[0] = -motion[0]
                        motion[4] = -motion[4]
                        motion[3], motion[4] = motion[4], motion[3]
-                       motion[2] = 0  # push_t任务：禁用z轴移动
 
                        #* === 步骤2: 计算并更新目标位姿 ===
                        translation_delta = motion[:3] * self.dt
@@ -482,9 +476,6 @@ class CollectDataWithTeleop2:
                        if np.linalg.norm(rotation_angles) > 1e-6:
                            rotation_scipy = R.from_euler('xyz', rotation_angles)
                            self.target_pose.rotation = self.target_pose.rotation @ rotation_scipy.as_matrix()
-
-                       # 强制锁定z轴高度
-                       self.target_pose.translation[2] = self.initial_z
 
                        #* === 步骤3: 发布控制指令（始终发布，确保丝滑控制）===
                        if i > 0:
@@ -672,19 +663,18 @@ def main():
     frequency = 80.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）rr
     duration=600
     # task_name = 'put_lion_on_top_shelf'
-    task_name = 'push_T_5'
+    task_name = 'cook_2'
     gripper_thres = 0.05
     # instruction = "put the lion on the top shelf"
-    instruction = 'push the T block into the target'
-    task_idx = 54  # 起始轨迹序号
+    instruction = 'Scoop the pancake and place it on the tray'
+    task_idx = 11  # 起始轨迹序号
 
-    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_4"
+    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_5"
     save_interval = 4  # 每1步保存一次数据（即60/3=20Hz保存频率）
     resolution = "VGA"  # 图像分辨率：可选 "HD1080" (1080x1920) 或 "VGA" (376x672)
 
     # push_t任务的目标关节位置
-    target_joints_push_t = np.array([-0.32337659, 0.16913922, -0.60301942, -2.37739704,
-                                      0.12417754, 2.47628506, -0.19928152])
+    target_joints_cook = np.array([1.684841132467561, 0.8842280307586431, -1.7218389136359598, -1.8827389188329948, 0.8921751896732253, 1.673525678267762, 2.165940937432027])
 
     # 在循环外初始化相机和机械臂（只初始化一次）
     # 注意：必须先初始化 FrankaArm，因为它会初始化 ROS 节点
@@ -694,7 +684,7 @@ def main():
 
     # 移动到push_t初始状态
     print("[Robot] 将机械臂移动到push_t初始状态...")
-    shared_fa.goto_joints(target_joints_push_t.tolist(), duration=5.0, ignore_virtual_walls=True)
+    shared_fa.goto_joints(target_joints_cook.tolist(), duration=5.0, ignore_virtual_walls=True)
     rospy.sleep(1.0)
     print("[OK] 机械臂已移动到push_t初始状态")
 
@@ -727,8 +717,7 @@ def main():
             print("="*60)
             print("\n🎮 控制说明:")
             print("   [R] 开始/停止录制")
-            print("   [SpaceMouse] 控制机械臂移动（XY平移 + 旋转）")
-            print("   约束: Z轴高度固定不变")
+            print("   [SpaceMouse] 控制机械臂移动（XYZ平移 + 旋转）")
             print("   注意: 夹爪已禁用")
             print("\n⏸️  等待中... 按 [R] 键开始录制\n")
 
@@ -768,7 +757,7 @@ def main():
                 # 自动复位机械臂到push_t初始位置
                 print("\n🤖 正在复位机械臂到push_t初始位置...", flush=True)
                 try:
-                    shared_fa.goto_joints(target_joints_push_t.tolist(), duration=5.0, ignore_virtual_walls=True)
+                    shared_fa.goto_joints(target_joints_cook.tolist(), duration=5.0, ignore_virtual_walls=True)
                     rospy.sleep(1.0)
                     print("✅ 机械臂已复位到push_t初始位置！", flush=True)
                 except Exception as e:

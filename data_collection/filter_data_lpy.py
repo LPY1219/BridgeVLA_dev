@@ -479,16 +479,14 @@ if __name__ == "__main__":
 
     # 批量处理示例 - 新格式（3个第三视角相机）
     batch_filter_data(
-        source_dir="/media/casia/data4/lpy/3zed_data/raw_data_4/push_T_4",  # 新格式：3个第三视角相机
-        target_dir="/media/casia/data4/lpy/3zed_data/filter_data_4/push_T_4",
+        source_dir="/media/casia/data4/lpy/3zed_data/raw_data_5/cook_2",  # 新格式：3个第三视角相机
+        target_dir="/media/casia/data4/lpy/3zed_data/filter_data_5/cook_2",
         thres_xyz=0.01,
         thres_rotation_deg=3.0
     )
-
     # 批量处理示例 - 旧格式（1个第三视角 + 1个腕部相机）
     # batch_filter_data(
     #     source_dir="/media/casia/data4/wxn/data/DP0/put_coke_can_on_the_upper_drawer",  # 旧格式
     #     target_dir="/media/casia/T7/Franka_data/put_coke_can_on_the_upper_drawer",
     #     thres_xyz=0.01,
     #     thres_rotation_deg=2.0
-    # )
