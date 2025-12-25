@@ -22,7 +22,8 @@ def get_root_path():
     possible_paths = [
         "/share/project/lpy/BridgeVLA",
         "/DATA/disk1/lpy/BridgeVLA_dev",
-        "/home/lpy/BridgeVLA_dev"
+        "/home/lpy/BridgeVLA_dev",
+        "/mnt/data/cyx/workspace/BridgeVLA_dev",
     ]
     for path in possible_paths:
         if os.path.exists(path):
@@ -721,7 +722,11 @@ class HeatmapInferenceMVRotGrip:
 
         # 获取预测的离散索引（delta值）
         rotation_delta_bins = rotation_logits.argmax(dim=-1)  # (T-1, 3)
-        gripper_change = gripper_logits.argmax(dim=1)  # (T-1,) - 0=不变, 1=变化
+        gripper_predictions = gripper_logits.argmax(dim=1)  # (T-1,) - 21class [-1, 1]
+
+        gripper_predictions = gripper_predictions.float() * 0.1 - 1.0
+        gripper_predictions = gripper_predictions.cpu().numpy()
+        # print(f"gripper_predictions: {gripper_predictions}")
 
         # 5. 将delta值转换为绝对值
         # rotation delta: bins表示变化量，需要加到初始值上
@@ -736,14 +741,6 @@ class HeatmapInferenceMVRotGrip:
         # 归一化到 [-180, 180]
         rotation_predictions = ((rotation_predictions + 180) % 360) - 180
 
-        # gripper: 根据变化标志计算实际状态
-        # gripper_change[t] 表示第 t 帧是否与第一帧不同（不是累积的翻转信号）
-        gripper_predictions = np.zeros(num_future_frames, dtype=np.int64)
-        for t in range(num_future_frames):
-            if gripper_change[t].item() == 1:  # 与第一帧不同
-                gripper_predictions[t] = 1 - initial_gripper  # 使用相反的状态
-            else:  # 与第一帧相同
-                gripper_predictions[t] = initial_gripper  # 使用相同的状态
 
 
         # 6. 可视化生成的视频帧

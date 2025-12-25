@@ -1,8 +1,7 @@
 #!/bin/bash
-
 # 自动检测根路径
-if [ -d "/DATA/disk0/lpy/BridgeVLA_dev" ]; then
-    ROOT_PATH_1="/DATA/disk0/lpy/BridgeVLA_dev"
+if [ -d "/mnt/data/cyx/workspace/BridgeVLA_dev" ]; then
+    ROOT_PATH_1="/mnt/data/cyx/workspace/BridgeVLA_dev"
     ROOT_PATH=$ROOT_PATH_1
 elif [ -d "/home/lpy/BridgeVLA_dev" ]; then
     ROOT_PATH_2="/home/lpy/BridgeVLA_dev"
@@ -13,7 +12,7 @@ else
 fi
 
 # 机器1配置（原始机器）
-MACHINE1_CONDA_PATH="/home/yw/anaconda3/etc/profile.d/conda.sh"
+MACHINE1_CONDA_PATH="/mnt/data/cyx/miniconda3/etc/profile.d/conda.sh"
 MACHINE1_CONDA_ENV="metaworld_eval"
 
 
@@ -62,14 +61,14 @@ fi
 # ==============================================
 # 模型和数据配置
 # ==============================================
-LORA_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora/metaworld_pretrain_false_unfreeze_modulate_true/20251209_095730/epoch-49.safetensors"
-ROT_GRIP_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/mv_rot_grip_v2/metaworld/20251210_232605/epoch-10.pth"
+LORA_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora/metaworld_5_tasks_old/epoch-89.safetensors"
+ROT_GRIP_CHECKPOINT="${ROOT_PATH}/logs/Wan/train/mv_rot_grip_v2/metaworld/20251217_164432/epoch-48.pth"
 
 # 输出目录
 OUTPUT_DIR="${ROOT_PATH}/metaworld_results"
 
 # 模型基础路径
-MODEL_BASE_PATH="/DATA/disk0/lpy/huggingface/Wan2.2-TI2V-5B-fused"
+MODEL_BASE_PATH="/mnt/data/cyx/huggingface/Wan2.2-TI2V-5B-fused"
 
 # 模型类型
 WAN_TYPE="5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP"
@@ -87,35 +86,18 @@ HIDDEN_DIM=512              # 隐藏层维度
 USE_MERGED_POINTCLOUD=true
 
 # 自动计算旋转bins数量（360度 / 分辨率）
-NUM_ROTATION_BINS=$(echo "360 / $ROTATION_RESOLUTION" | bc)
+NUM_ROTATION_BINS=$(awk "BEGIN {printf \"%.0f\", 360 / $ROTATION_RESOLUTION}")
+
+# 验证计算结果
+if [ -z "$NUM_ROTATION_BINS" ] || [ "$NUM_ROTATION_BINS" = "0" ]; then
+    echo "Error: Failed to calculate NUM_ROTATION_BINS. Using default value 72."
+    NUM_ROTATION_BINS=72
+fi
 
 # ==============================================
 # 数据集配置
 # ==============================================
 
-# 数据集路径（自动检测）
-DATA_ROOT_OPTIONS=(
-    # "/data/Franka_data_3zed/put_lion_on_top_shelf"
-    "/DATA/disk0/lpy/rlbench_data/data/test/"
-)
-
-# 查找第一个存在的数据集路径
-DATA_ROOT=""
-for path in "${DATA_ROOT_OPTIONS[@]}"; do
-    if [ -d "$path" ]; then
-        DATA_ROOT="$path"
-        echo "✓ Found dataset at: $DATA_ROOT"
-        break
-    fi
-done
-
-if [ -z "$DATA_ROOT" ]; then
-    echo "✗ Error: Cannot find dataset in any of the following paths:"
-    for path in "${DATA_ROOT_OPTIONS[@]}"; do
-        echo "  - $path"
-    done
-    exit 1
-fi
 
 # 数据集参数（使用逗号分隔）
 SCENE_BOUNDS="-0.5, 0.2, 0, 0.5, 1, 0.5"
@@ -130,9 +112,18 @@ export CUDA_VISIBLE_DEVICES=0
 # ==============================================
 # RLBench测试配置
 # ==============================================
-# put_item_in_drawer reach_and_drag put_groceries_in_cupboard put_money_in_safe close_jar place_cups place_wine_at_rack_location light_bulb_in sweep_to_dustpan_of_size
-# turn_tap slide_block_to_color_target open_drawer place_shape_in_shape_sorter push_buttons stack_blocks insert_onto_square_peg meat_off_grill stack_cups
-TASK="door-open"  # 任务名称，使用"all"表示所有任务
+# 任务列表（可以添加多个任务）
+TASKS=(
+    "reach"
+    "push-wall"
+    "soccer"
+    "bin-picking"
+    "dial-turn"
+)
+
+# 如果只想测试单个任务，可以这样设置：
+# TASKS=("push-wall")
+
 EVAL_EPISODES=25  # 每个任务的评估次数
 EPISODE_LENGTH=25  # 每个任务的最大步数
 
@@ -157,13 +148,13 @@ echo "  Num Rotation Bins: $NUM_ROTATION_BINS (auto-calculated: 360° / ${ROTATI
 echo "  Use Merged Pointcloud: $USE_MERGED_POINTCLOUD"
 echo ""
 echo "Dataset Configuration:"
-echo "  Data Root: $DATA_ROOT"
 echo "  Scene Bounds: $SCENE_BOUNDS"
 echo "  Sequence Length: $SEQUENCE_LENGTH"
 echo "  Image Size: $IMG_SIZE"
 echo ""
 echo "Evaluation Configuration:"
-echo "  Task: $TASK"
+echo "  Tasks: ${TASKS[*]}"
+echo "  Total Tasks: ${#TASKS[@]}"
 echo "  Eval Episodes per Task: $EVAL_EPISODES"
 echo "  Episode Length: $EPISODE_LENGTH"
 echo ""
@@ -190,46 +181,87 @@ echo "✓ All checkpoint files found"
 echo ""
 
 # ==============================================
-# 运行推理脚本
+# 运行推理脚本（循环测试多个任务）
 # ==============================================
 
-# 构建Python命令参数
-PYTHON_ARGS=(
-    --lora_checkpoint "$LORA_CHECKPOINT"
-    --rot_grip_checkpoint "$ROT_GRIP_CHECKPOINT"
-    --model_base_path "$MODEL_BASE_PATH"
-    --wan_type "$WAN_TYPE"
-    --scene_bounds "$SCENE_BOUNDS"
-    --sequence_length $SEQUENCE_LENGTH
-    --img_size "$IMG_SIZE"
-    --rotation_resolution $ROTATION_RESOLUTION
-    --hidden_dim $HIDDEN_DIM
-    --num_rotation_bins $NUM_ROTATION_BINS
-    --device "cuda:0"
-    --output_dir "$OUTPUT_DIR"
-    --task "$TASK"
-)
-
-# 添加dual head参数
-if [ "$USE_DUAL_HEAD" = "true" ]; then
-    PYTHON_ARGS+=(--use_dual_head)
-fi
-
-# 添加点云配置参数
-if [ "$USE_MERGED_POINTCLOUD" = "true" ]; then
-    PYTHON_ARGS+=(--use_merged_pointcloud)
-fi
-
-# # 打印完整的命令用于调试
-# echo "Executing command with arguments:"
-# printf '%s\n' "${PYTHON_ARGS[@]}"
-# echo ""
-
-# 执行推理（使用VAE decode feature版本）
-xvfb-run -a python3 "${ROOT_PATH}/finetune/MetaWorld/eval_dm.py" "${PYTHON_ARGS[@]}"
+# 记录开始时间
+START_TIME=$(date +%s)
+TOTAL_TASKS=${#TASKS[@]}
+CURRENT_TASK=0
 
 echo ""
 echo "================================"
-echo "Inference completed!"
+echo "Starting evaluation for $TOTAL_TASKS task(s)"
+echo "================================"
+echo ""
+
+# 循环遍历所有任务
+for TASK in "${TASKS[@]}"; do
+    CURRENT_TASK=$((CURRENT_TASK + 1))
+    
+    echo ""
+    echo "================================"
+    echo "[$CURRENT_TASK/$TOTAL_TASKS] Evaluating task: $TASK"
+    echo "================================"
+    echo ""
+    
+    # 构建Python命令参数
+    PYTHON_ARGS=(
+        --lora_checkpoint "$LORA_CHECKPOINT"
+        --rot_grip_checkpoint "$ROT_GRIP_CHECKPOINT"
+        --model_base_path "$MODEL_BASE_PATH"
+        --wan_type "$WAN_TYPE"
+        --scene_bounds "$SCENE_BOUNDS"
+        --sequence_length $SEQUENCE_LENGTH
+        --img_size "$IMG_SIZE"
+        --rotation_resolution $ROTATION_RESOLUTION
+        --hidden_dim $HIDDEN_DIM
+        --num_rotation_bins $NUM_ROTATION_BINS
+        --device "cuda:0"
+        --output_dir "$OUTPUT_DIR"
+        --task "$TASK"
+    )
+    
+    # 添加dual head参数
+    if [ "$USE_DUAL_HEAD" = "true" ]; then
+        PYTHON_ARGS+=(--use_dual_head)
+    fi
+    
+    # 添加点云配置参数
+    if [ "$USE_MERGED_POINTCLOUD" = "true" ]; then
+        PYTHON_ARGS+=(--use_merged_pointcloud)
+    fi
+    
+    # 执行推理（使用VAE decode feature版本）
+    TASK_START_TIME=$(date +%s)
+    if xvfb-run -a /mnt/data/cyx/miniconda3/envs/metaworld_eval/bin/python "${ROOT_PATH}/finetune/MetaWorld/eval_dm.py" "${PYTHON_ARGS[@]}"; then
+        TASK_END_TIME=$(date +%s)
+        TASK_DURATION=$((TASK_END_TIME - TASK_START_TIME))
+        echo ""
+        echo "✓ Task '$TASK' completed successfully (took ${TASK_DURATION}s)"
+        echo "  Results saved to: $OUTPUT_DIR/$TASK"
+    else
+        TASK_END_TIME=$(date +%s)
+        TASK_DURATION=$((TASK_END_TIME - TASK_START_TIME))
+        echo ""
+        echo "✗ Task '$TASK' failed (took ${TASK_DURATION}s)"
+        echo "  Continuing with next task..."
+    fi
+    echo ""
+done
+
+# 计算总耗时
+END_TIME=$(date +%s)
+TOTAL_DURATION=$((END_TIME - START_TIME))
+HOURS=$((TOTAL_DURATION / 3600))
+MINUTES=$(((TOTAL_DURATION % 3600) / 60))
+SECONDS=$((TOTAL_DURATION % 60))
+
+echo ""
+echo "================================"
+echo "All tasks evaluation completed!"
+echo "================================"
+echo "Total tasks: $TOTAL_TASKS"
+echo "Total time: ${HOURS}h ${MINUTES}m ${SECONDS}s"
 echo "Results saved to: $OUTPUT_DIR"
 echo "================================"

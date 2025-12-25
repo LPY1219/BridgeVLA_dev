@@ -14,6 +14,8 @@ from gym import spaces
 from utils.camera import Camera
 
 
+
+
 class MetaWorldEnv(gym.Env):
     metadata = {"render.modes": ["rgb_array"], "video.frames_per_second": 10}
 
@@ -40,13 +42,21 @@ class MetaWorldEnv(gym.Env):
         
         self.image_size = 128
         
-        self.camera = Camera(sim=self.env.sim, cam_names=['corner2'], img_size=self.image_size)
+        # Initialize camera after reset to avoid segmentation fault
+        # Try to use all cameras, but Camera class will filter out non-existent ones
+        try:
+            self.camera = Camera(sim=self.env.sim, cam_names=['topview', 'corner', 'corner2', 'corner3', 'behindGripper', 'gripperPOV'], img_size=self.image_size)
+        except Exception as e:
+            # Fallback to single camera if multiple cameras fail
+            print(f"Warning: Failed to initialize multiple cameras: {e}")
+            print("Falling back to single camera 'corner2'")
+            self.camera = Camera(sim=self.env.sim, cam_names=['corner2'], img_size=self.image_size)
     
         self.episode_length = self._max_episode_steps = 200
         self.action_space = self.env.action_space
         self.obs_sensor_dim = self.get_robot_state().shape[0]
 
-        self.num_points = self.image_size * self.image_size
+        self.num_points = self.image_size * self.image_size * len(self.camera.cam_names)
 
         self.observation_space = spaces.Dict({
             'agent_pos': spaces.Box(
@@ -143,6 +153,7 @@ class MetaWorldEnv(gym.Env):
     def reset(self):
         self.env.reset()
         self.env.reset_model()
+        
         raw_obs = self.env.reset()
         self.cur_step = 0
 

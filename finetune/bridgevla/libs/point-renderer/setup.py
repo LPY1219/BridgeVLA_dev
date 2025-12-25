@@ -13,9 +13,6 @@ from setuptools import setup, find_packages, dist
 import glob
 import logging
 
-import torch
-from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
-
 PACKAGE_NAME = 'point_renderer'
 DESCRIPTION = 'Fast Point Cloud Renderer'
 URL = 'https://gitlab-master.nvidia.com/vblukis/point-renderer'
@@ -25,6 +22,9 @@ version = '0.2.0'
 
 
 def get_extensions():
+    # Import torch here to avoid requiring it during build isolation
+    import torch
+    from torch.utils.cpp_extension import CppExtension, CUDAExtension
     extra_compile_args = {'cxx': ['-O3']}
     define_macros = []
     include_dirs = []
@@ -62,6 +62,17 @@ def get_extensions():
 
 
 if __name__ == '__main__':
+    # Import BuildExtension here to avoid requiring torch at module level
+    try:
+        from torch.utils.cpp_extension import BuildExtension
+        cmdclass = {
+            'build_ext': BuildExtension.with_options(no_python_abi_suffix=True)
+        }
+    except ImportError:
+        # If torch is not available, we can't build extensions
+        # This will be handled by get_extensions() returning None
+        cmdclass = {}
+    
     setup(
         # Metadata
         name=PACKAGE_NAME,
@@ -77,8 +88,6 @@ if __name__ == '__main__':
         include_package_data=True,
         zip_safe=True,
         ext_modules=get_extensions(),
-        cmdclass={
-            'build_ext': BuildExtension.with_options(no_python_abi_suffix=True)
-        }
+        cmdclass=cmdclass
 
     )
