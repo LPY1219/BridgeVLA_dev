@@ -15,8 +15,9 @@ def flush_input_buffer():
     except:
         pass
 
+
 """
-用于对机械臂遥操作并保存数据的代码进行Debug
+混合相机（1个ZED第三视角 + 1个RealSense腕部）的push_t任务数据采集脚本
 """
 import sys
 import os
@@ -42,7 +43,8 @@ from frankapy.proto import PosePositionSensorMessage
 from scipy.spatial.transform import Rotation as R
 from multiprocessing.managers import SharedMemoryManager
 import cv2
-from real_camera_utils_lpy import get_cam_extrinsic
+from real_camera_utils_wxn import get_cam_extrinsic
+from real_camera_utils_rs import RSCapture
 
 
 # 导入自定义模块
@@ -55,17 +57,21 @@ except ImportError:
    pynput_available = False
 
 
-from input_device.sapcemouse_cook import FrankaSpacemouse
+from input_device.spacemouse import FrankaSpacemouse
 from shared_memory.shared_memory_queue import SharedMemoryQueue
 from shared_memory.shared_ndarray import SharedNDArray
-from real_camera_utils_lpy import Camera
+from real_camera_utils_wxn import Camera
 from data_collection_utils import pose2array, motion2array, publish_pose
 
 
-class CollectDataWithTeleop2:
-   """遥操作控制器 + img_rgb + depth + 机械臂目标状态采集"""
-  
-   def __init__(self, frequency: float = 30.0, duration:float = 60.0, task_name:str = 'debug1', trail:int = 0, gripper_thres:float = 0.05, instruction:str = "place the block on the plate", save_interval: int = 1, resolution: str = "HD1080", camera=None, fa=None):
+class CollectDataWithTeleopPushTWrist:
+   """混合相机遥操作控制器：1个ZED第三视角 + 1个RealSense腕部 + push_t任务约束"""
+
+   def __init__(self, frequency: float = 30.0, duration:float = 60.0, task_name:str = 'push_t_wrist',
+                trail:int = 0, gripper_thres:float = 0.05,
+                instruction:str = "push the T block into the target",
+                save_interval: int = 1, resolution: str = "VGA",
+                camera=None, fa=None, wrist_cam=None):
        """
            Args:
                frequency: 目标的采集频率
@@ -74,9 +80,10 @@ class CollectDataWithTeleop2:
                gripper_thres: 夹爪阈值
                instruction: 任务描述
                save_interval: 保存间隔，每N步保存一次数据（默认每步都保存）
-               resolution: 图像分辨率类型，可选 "HD1080" 或 "VGA"
-               camera: 可选的相机对象（用于复用已初始化的相机）
+               resolution: ZED图像分辨率类型，可选 "HD1080" 或 "VGA"
+               camera: 可选的ZED相机对象（用于复用已初始化的相机）
                fa: 可选的机械臂对象（用于复用已初始化的机械臂）
+               wrist_cam: 可选的RealSense腕部相机对象
        """
        self.task_name = task_name
        self.trail = trail
@@ -88,26 +95,32 @@ class CollectDataWithTeleop2:
        self.instruction = instruction
        self.save_interval = save_interval  # 保存间隔
 
-       # 设置图像分辨率
+       # 设置ZED图像分辨率
        self.resolution = resolution
        if resolution == "HD1080":
-           self.img_height = 1080
-           self.img_width = 1920
+           self.zed_img_height = 1080
+           self.zed_img_width = 1920
        elif resolution == "VGA":
-           self.img_height = 376
-           self.img_width = 672
+           self.zed_img_height = 376
+           self.zed_img_width = 672
        else:
            raise ValueError(f"不支持的分辨率类型: {resolution}，请使用 'HD1080' 或 'VGA'")
 
+       # RealSense腕部相机分辨率（固定）
+       self.wrist_img_height = 480
+       self.wrist_img_width = 640
+
        # 目标关节位置（push_t任务的初始状态）
-       self.target_joints_cook = np.array([1.684841132467561, 0.8842280307586431, -1.7218389136359598, -1.8827389188329948, 0.8921751896732253, 1.673525678267762, 2.165940937432027])
+       self.target_joints_push_t = np.array([-0.4107171577518772, 0.06878235154662957, -0.6016019385553567,
+                                              -2.4524345902834477, 0.02801655047270271, 2.4994749949336867,
+                                              -0.27162684883251664])
 
        # 初始化或复用机械臂
        if fa is None:
            rospy.loginfo("[Robot] 初始化机械臂（禁用gripper）...")
            self.fa = FrankaArm(with_gripper=False)
            rospy.loginfo("[Robot] 将机械臂移动到push_t初始状态...")
-           self.reset_joints_cook()
+           self.reset_joints_push_t()
            self.fa_is_owned = True  # 标记机械臂是否由此对象创建
        else:
            rospy.loginfo("[Robot] 复用已初始化的机械臂...")
@@ -118,16 +131,36 @@ class CollectDataWithTeleop2:
        # 暂存的目标动作，用于后续通过ros向机械臂传输动作
        self.target_pose = self.current_pose.copy()
 
-       # 初始化或复用相机
+       # 记录初始z轴高度（push_t任务中保持不变）
+       self.initial_z = self.target_pose.translation[2]
+       rospy.loginfo(f"[Robot] 初始z轴高度: {self.initial_z:.4f}m (已锁定)")
+
+       # 初始化或复用ZED第三视角相机（只用1个）
        if camera is None:
-           rospy.loginfo(f"[Camera] 初始化3个第三视角Zed相机 ({self.resolution}: {self.img_height}x{self.img_width})...")
-           self.camera = Camera(camera_type="all", zed_resolution=self.resolution)
+           rospy.loginfo(f"[Camera] 初始化1个ZED第三视角相机 ({self.resolution}: {self.zed_img_height}x{self.zed_img_width})...")
+           self.camera = Camera(camera_type="3rd_1", zed_resolution=self.resolution)
            self.camera_is_owned = True  # 标记相机是否由此对象创建
        else:
-           rospy.loginfo(f"[Camera] 复用已初始化的相机 ({self.resolution}: {self.img_height}x{self.img_width})...")
+           rospy.loginfo(f"[Camera] 复用已初始化的ZED相机 ({self.resolution}: {self.zed_img_height}x{self.zed_img_width})...")
            self.camera = camera
            self.camera_is_owned = False
-      
+
+       # 初始化或复用RealSense腕部相机
+       if wrist_cam is None:
+           rospy.loginfo(f"[Camera] 初始化RealSense腕部相机 ({self.wrist_img_height}x{self.wrist_img_width})...")
+           self.wrist_cam = RSCapture(
+               name='wrist',
+               serial_number='323622271380',  # TODO: 修改为实际的序列号
+               dim=(self.wrist_img_width, self.wrist_img_height),
+               fps=90,
+               exposure=15000  # 降低曝光值（从20000降至15000）
+           )
+           self.wrist_cam_is_owned = True
+       else:
+           rospy.loginfo(f"[Camera] 复用已初始化的RealSense腕部相机...")
+           self.wrist_cam = wrist_cam
+           self.wrist_cam_is_owned = False
+
        # ROS相关内容
        self.rate = rospy.Rate(frequency)
        self.publisher = rospy.Publisher(
@@ -135,7 +168,7 @@ class CollectDataWithTeleop2:
            SensorDataGroup,
            queue_size = 20
        )
-      
+
        #* 记录状态变量
        self.init_time = None
        self.step_counter = 0
@@ -143,35 +176,25 @@ class CollectDataWithTeleop2:
        self.recording = False
        self.gripper_control_in_progress = False  # 夹爪控制进行中标志
        self.should_exit = False  # 退出标志
-      
+
        #* 键盘状态
        self.keys_pressed = set()
        self.gripper_state = False # False夹爪打开，True夹爪闭合
        self.last_g_state = False
        self.last_r_state = False
-      
+
        # 夹爪已禁用，跳过夹爪初始化
-       # if self.fa_is_owned:
-       #     try:
-       #         rospy.loginfo("[Setup] 初始化夹爪状态...")
-       #         self.fa.open_gripper()  # 确保夹爪处于打开状态
-       #         rospy.sleep(1.0)  # 等待夹爪动作完成
-       #         rospy.loginfo("[OK] 夹爪初始化完成（打开状态）")
-       #     except Exception as e:
-       #         rospy.logerr(f"夹爪初始化失败: {e}")
-       # else:
-       #     rospy.loginfo("[Reuse] 复用机械臂，跳过夹爪初始化")
-      
+
        #* 数据存储功能
        self.data_arrays: Dict[str, SharedNDArray] = {} # 存储机械臂状态相关内容
 
-   def reset_joints_cook(self):
+   def reset_joints_push_t(self):
        """将机械臂重置到push_t任务的初始关节状态"""
-       rospy.loginfo(f"[Robot] 目标关节位置: {self.target_joints_cook}")
+       rospy.loginfo(f"[Robot] 目标关节位置: {self.target_joints_push_t}")
        try:
            # 将机械臂移动到目标关节位置
            self.fa.goto_joints(
-               self.target_joints_cook.tolist(),
+               self.target_joints_push_t.tolist(),
                duration=5.0,
                ignore_virtual_walls=True
            )
@@ -185,28 +208,31 @@ class CollectDataWithTeleop2:
            rospy.loginfo(f"[Robot] 当前关节位置: {current_joints}")
 
        except Exception as e:
-           rospy.logerr(f"reset_joints_cook 失败: {e}")
+           rospy.logerr(f"reset_joints_push_t 失败: {e}")
            raise
 
    def setup_shared_arrays(self, shm_manager: SharedMemoryManager):
        """设置共享内存数组"""
        rospy.loginfo(f"{'=' * 20} 正在设置共享内存数组 {'=' * 20}")
-       rospy.loginfo(f"[Resolution] 使用分辨率: {self.resolution} ({self.img_height}x{self.img_width})")
+       rospy.loginfo(f"[Resolution] ZED: {self.resolution} ({self.zed_img_height}x{self.zed_img_width})")
+       rospy.loginfo(f"[Resolution] RealSense Wrist: {self.wrist_img_height}x{self.wrist_img_width}")
 
-       # 图像大小 - 动态设置根据分辨率配置
-       bgr_shape = (self.total_steps, self.img_height, self.img_width, 3)
-       depth_shape = (self.total_steps, self.img_height, self.img_width)
-       pcd_shape = (self.total_steps, self.img_height, self.img_width, 3)
+       # ZED第三视角相机图像大小
+       zed_bgr_shape = (self.total_steps, self.zed_img_height, self.zed_img_width, 3)
+       zed_depth_shape = (self.total_steps, self.zed_img_height, self.zed_img_width)
+       zed_pcd_shape = (self.total_steps, self.zed_img_height, self.zed_img_width, 3)
 
-       # 保存三个第三视角相机的图像BGR
-       self.data_arrays['3rd_1_bgr_images'] = SharedNDArray.create_from_shape(
-           shm_manager, bgr_shape, np.uint8
+       # RealSense腕部相机图像大小
+       wrist_bgr_shape = (self.total_steps, self.wrist_img_height, self.wrist_img_width, 3)
+
+       # 保存ZED第三视角相机的图像BGR
+       self.data_arrays['3rd_bgr_images'] = SharedNDArray.create_from_shape(
+           shm_manager, zed_bgr_shape, np.uint8
        ) # 0-255
-       self.data_arrays['3rd_2_bgr_images'] = SharedNDArray.create_from_shape(
-           shm_manager, bgr_shape, np.uint8
-       ) # 0-255
-       self.data_arrays['3rd_3_bgr_images'] = SharedNDArray.create_from_shape(
-           shm_manager, bgr_shape, np.uint8
+
+       # 保存RealSense腕部相机的图像BGR
+       self.data_arrays['wrist_bgr_images'] = SharedNDArray.create_from_shape(
+           shm_manager, wrist_bgr_shape, np.uint8
        ) # 0-255
 
        # 记录机械臂位姿 xyz + quat
@@ -218,26 +244,14 @@ class CollectDataWithTeleop2:
            shm_manager, (self.total_steps,), np.bool_
        ) # 夹爪状态
 
-       # 三个相机的深度图
-       self.data_arrays['3rd_1_depth'] = SharedNDArray.create_from_shape(
-           shm_manager, depth_shape, np.float32
-       )
-       self.data_arrays['3rd_2_depth'] = SharedNDArray.create_from_shape(
-           shm_manager, depth_shape, np.float32
-       )
-       self.data_arrays['3rd_3_depth'] = SharedNDArray.create_from_shape(
-           shm_manager, depth_shape, np.float32
+       # ZED相机的深度图
+       self.data_arrays['3rd_depth'] = SharedNDArray.create_from_shape(
+           shm_manager, zed_depth_shape, np.float32
        )
 
-       # 三个相机的点云数据
-       self.data_arrays['3rd_1_pcd'] = SharedNDArray.create_from_shape(
-           shm_manager, pcd_shape, np.float32
-       )
-       self.data_arrays['3rd_2_pcd'] = SharedNDArray.create_from_shape(
-           shm_manager, pcd_shape, np.float32
-       )
-       self.data_arrays['3rd_3_pcd'] = SharedNDArray.create_from_shape(
-           shm_manager, pcd_shape, np.float32
+       # ZED相机的点云数据
+       self.data_arrays['3rd_pcd'] = SharedNDArray.create_from_shape(
+           shm_manager, zed_pcd_shape, np.float32
        )
 
        self.data_arrays['joints'] = SharedNDArray.create_from_shape(
@@ -245,46 +259,24 @@ class CollectDataWithTeleop2:
          )
 
        rospy.loginfo(f"[OK] 共享数组创建完成，预分配 {self.total_steps} 个数据点")
-      
-  
+
+
    def update_keyboard_state(self) -> Dict[str, Any]:
        """更新键盘状态"""
        if not pynput_available:
            return {'gripper_state': self.gripper_state, 'recording': self.recording}
-          
+
        current_g = 'g' in self.keys_pressed
        current_r = 'r' in self.keys_pressed
-      
+
        # 添加调试信息
        if len(self.keys_pressed) > 0 and (current_g or current_r):
            rospy.loginfo(f"当前按下的键: {self.keys_pressed}")
-      
-       # Toggle模式
+
+       # Toggle模式（夹爪已禁用，但保留代码结构）
        if current_g and not self.last_g_state and not self.gripper_control_in_progress:
-           self.gripper_control_in_progress = True  # 设置夹爪控制进行中标志
-           self.gripper_state = not self.gripper_state
+           print("⚠️  夹爪已禁用（push_t任务不需要夹爪）", flush=True)
 
-           # 执行夹爪动作（阻塞控制）
-           try:
-               if self.gripper_state:  # True = 夹爪关闭
-                   print("🤏 夹爪关闭中...")
-                   self.fa.close_gripper()
-               else:  # False = 夹爪打开
-                   print("✋ 夹爪打开中...")
-                   self.fa.open_gripper()
-
-               # 等待夹爪动作完成（阻塞控制）
-               rospy.sleep(1.0)  # 给夹爪足够时间完成动作
-               print("✅ 夹爪动作完成")
-              
-           except Exception as e:
-               rospy.logerr(f"夹爪控制出错: {e}")
-               # 如果夹爪控制失败，恢复之前的状态
-               self.gripper_state = not self.gripper_state
-               rospy.logwarn(f"夹爪状态已恢复为: {'闭合' if self.gripper_state else '打开'}")
-           finally:
-               self.gripper_control_in_progress = False  # 清除夹爪控制进行中标志
-          
        if current_r and not self.last_r_state:
            if self.recording:
                # 停止录制并设置退出标志
@@ -300,12 +292,12 @@ class CollectDataWithTeleop2:
                print("🎬 检测到 [R] 键！开始录制！", flush=True)
                print("▶️  移动机械臂进行操作...", flush=True)
                print("🔴"*20 + "\n", flush=True)
-      
+
        self.last_g_state = current_g
        self.last_r_state = current_r
-      
+
        return {'gripper_state': self.gripper_state, 'recording': self.recording}
-  
+
    def on_key_press(self, key):
        """按键按下回调"""
        try:
@@ -315,7 +307,7 @@ class CollectDataWithTeleop2:
                self.keys_pressed.add(key.name.lower())
        except Exception as e:
            rospy.logwarn(f"键盘按键处理错误: {e}")
-      
+
    def on_key_release(self, key):
        """按键释放回调"""
        try:
@@ -325,7 +317,7 @@ class CollectDataWithTeleop2:
                self.keys_pressed.discard(key.name.lower())
        except Exception as e:
            rospy.logwarn(f"键盘按键处理错误: {e}")
-      
+
    def control_step(self) -> bool:
     """控制步骤：采集相机并写入共享数组 -> 写入机械臂状态 -> 发布控制由主循环完成"""
     # 注意：键盘状态已在主循环中更新，这里不再重复调用
@@ -337,10 +329,14 @@ class CollectDataWithTeleop2:
     # ---- 2) 相机采集 ----
     step_start = time.time()
 
-    # 三个第三视角相机（ZED）通过已有的封装
-    # result_dict['3rd_1'], result_dict['3rd_2'], result_dict['3rd_3']
-    # 每个包含: {'rgb': (H,W,3) BGR, 'depth': (H,W) float32, 'pcd': (H,W,3) float32}
+    # ZED第三视角相机（只用3rd_1）
+    # result_dict['3rd_1'] 包含: {'rgb': (H,W,3) BGR, 'depth': (H,W) float32, 'pcd': (H,W,3) float32}
     result_dict = self.camera.capture()
+
+    # RealSense腕部相机
+    wrist_ok, wrist_img = (False, None)
+    if hasattr(self, "wrist_cam") and self.wrist_cam is not None:
+        wrist_ok, wrist_img = self.wrist_cam.read()   # BGR, HxWx3 (uint8)
 
     capture_time = time.time() - step_start
 
@@ -356,26 +352,37 @@ class CollectDataWithTeleop2:
         # 优化：一次性获取所有数组引用，避免重复调用.get()
         idx = self.step_counter
 
-        # 4.1 三个第三视角相机 - BGR 图像 (优化版)
+        # 4.1 ZED第三视角相机 - BGR 图像
         time_bgr_start = time.time()
-        for cam_type in ['3rd_1', '3rd_2', '3rd_3']:
-            key = f'{cam_type}_bgr_images'
-            if key in self.data_arrays:
-                self.data_arrays[key].get()[idx] = result_dict[cam_type]['rgb']
+        if '3rd_bgr_images' in self.data_arrays:
+            self.data_arrays['3rd_bgr_images'].get()[idx] = result_dict['3rd_1']['rgb']
         time_bgr = time.time() - time_bgr_start
 
-        # 4.2 三个第三视角相机 - 深度与点云 (优化版)
+        # 4.2 ZED第三视角相机 - 深度与点云
         time_depth_start = time.time()
-        for cam_type in ['3rd_1', '3rd_2', '3rd_3']:
-            depth_key = f'{cam_type}_depth'
-            pcd_key = f'{cam_type}_pcd'
-            if depth_key in self.data_arrays:
-                self.data_arrays[depth_key].get()[idx] = result_dict[cam_type]['depth']
-            if pcd_key in self.data_arrays:
-                self.data_arrays[pcd_key].get()[idx] = result_dict[cam_type]['pcd']
+        if '3rd_depth' in self.data_arrays:
+            self.data_arrays['3rd_depth'].get()[idx] = result_dict['3rd_1']['depth']
+        if '3rd_pcd' in self.data_arrays:
+            self.data_arrays['3rd_pcd'].get()[idx] = result_dict['3rd_1']['pcd']
         time_depth = time.time() - time_depth_start
 
-        # 4.3 机械臂实际状态（与图像同步写）
+        # 4.3 RealSense腕部相机 - BGR 图像
+        time_wrist_start = time.time()
+        if 'wrist_bgr_images' in self.data_arrays:
+            if wrist_ok and wrist_img is not None:
+                # 确保尺寸匹配
+                if (wrist_img.shape[0], wrist_img.shape[1]) != (self.wrist_img_height, self.wrist_img_width):
+                    wrist_img_resized = cv2.resize(wrist_img, (self.wrist_img_width, self.wrist_img_height),
+                                                   interpolation=cv2.INTER_LINEAR)
+                else:
+                    wrist_img_resized = wrist_img
+                self.data_arrays['wrist_bgr_images'].get()[idx] = wrist_img_resized
+            else:
+                # 占位：全零，避免未赋值
+                self.data_arrays['wrist_bgr_images'].get()[idx].fill(0)
+        time_wrist = time.time() - time_wrist_start
+
+        # 4.4 机械臂实际状态（与图像同步写）
         time_robot_start = time.time()
         actual_pose = self.fa.get_pose()
         actual_joints = self.fa.get_joints()
@@ -390,12 +397,13 @@ class CollectDataWithTeleop2:
         time_after_save = time.time()
         total_save_time = time_after_save - time_before_save
 
-        # 4.4 详细性能日志（每30步）
+        # 4.5 详细性能日志（每30步）
         if self.step_counter % 30 == 0:
             rospy.loginfo(f"[性能] Step {self.step_counter}: "
                           f"Capture={capture_time*1000:.1f}ms, "
                           f"Save Total={total_save_time*1000:.1f}ms "
-                          f"(BGR={time_bgr*1000:.1f}ms, Depth+PCD={time_depth*1000:.1f}ms, Robot={time_robot*1000:.1f}ms)")
+                          f"(ZED_BGR={time_bgr*1000:.1f}ms, ZED_Depth+PCD={time_depth*1000:.1f}ms, "
+                          f"Wrist={time_wrist*1000:.1f}ms, Robot={time_robot*1000:.1f}ms)")
     else:
         # 不保存时的性能日志（每 30 个控制步打印一次）
         if self.control_step_counter % 30 == 0:
@@ -403,7 +411,7 @@ class CollectDataWithTeleop2:
 
     # ---- 5) 一切正常，返回 True 让主循环继续 ----
     return True
-  
+
    def run_data_collection(self, save_dir: str = "./teleop_data", trail:int = 0):
        """运行数据采集"""
        rospy.loginfo(f"[Start] 开始高频数据采集 - {self.frequency}Hz, {self.duration}s")
@@ -412,7 +420,7 @@ class CollectDataWithTeleop2:
        with SharedMemoryManager() as shm_manager:
            # 设置共享内存
            self.setup_shared_arrays(shm_manager)
-          
+
            # 创建Spacemouse控制器（优化参数以获得丝滑控制）
            spacemouse = FrankaSpacemouse(
                shm_manager,
@@ -422,7 +430,7 @@ class CollectDataWithTeleop2:
                rotation_sensitivity=0.6,  # 适中旋转灵敏度
                debug=False
            )
-          
+
            # 启动键盘监听
            keyboard_listener = None
            if pynput_available:
@@ -434,39 +442,41 @@ class CollectDataWithTeleop2:
                rospy.loginfo("[OK] 键盘监听已启动")
 
            rospy.loginfo("[Control] 控制说明:")
-           rospy.loginfo("  - SpaceMouse: 控制机械臂移动（XYZ平移 + 旋转）")
+           rospy.loginfo("  - SpaceMouse: 控制机械臂移动（XY平移 + 旋转）")
            rospy.loginfo("  - 'R' 键: 开始/停止录制")
+           rospy.loginfo("  - 约束: Z轴高度固定不变")
            rospy.loginfo("  - 注意: 夹爪已禁用")
+           rospy.loginfo("  - 相机: 1个ZED第三视角 + 1个RealSense腕部")
            rospy.loginfo("  - Ctrl+C: 停止采集")
            rospy.loginfo("="*50)
-          
+
            with spacemouse:
                try:
                    # 启动机械臂动态控制（优化阻抗参数以获得丝滑控制）
-                   # 平移阻抗适中使运动流畅，z轴稍高保持稳定，旋转阻抗较低避免卡顿
                    self.fa.goto_pose(
                        self.target_pose,
                        duration=self.duration,
                        dynamic=True,
                        buffer_time=10,
-                       cartesian_impedances=[600.0, 600.0, 600.0, 50.0, 50.0, 50.0]  # xy=600(流畅), z=800(适中), 旋转=50(柔顺)
+                       cartesian_impedances=[600.0, 600.0, 800.0, 50.0, 50.0, 50.0]
                    )
-                  
+
                    start_time = time.time()
                    rospy.loginfo("🔄 开始控制循环，正确观察-动作同步")
                    for i in range(self.total_steps):
                        loop_start = time.time()
-                      
+
                        #* === 步骤1: 读取输入 (~1ms) ===
                        # 更新键盘状态（无论是否录制都要检查）
                        self.update_keyboard_state()
-                      
+
                        motion = spacemouse.get_motion_state()
 
                        # 调整运动方向映射
                        motion[0] = -motion[0]
                        motion[4] = -motion[4]
                        motion[3], motion[4] = motion[4], motion[3]
+                       motion[2] = 0  # push_t任务：禁用z轴移动
 
                        #* === 步骤2: 计算并更新目标位姿 ===
                        translation_delta = motion[:3] * self.dt
@@ -476,6 +486,9 @@ class CollectDataWithTeleop2:
                        if np.linalg.norm(rotation_angles) > 1e-6:
                            rotation_scipy = R.from_euler('xyz', rotation_angles)
                            self.target_pose.rotation = self.target_pose.rotation @ rotation_scipy.as_matrix()
+
+                       # 强制锁定z轴高度
+                       self.target_pose.translation[2] = self.initial_z
 
                        #* === 步骤3: 发布控制指令（始终发布，确保丝滑控制）===
                        if i > 0:
@@ -491,16 +504,16 @@ class CollectDataWithTeleop2:
                        #* === 步骤4: 录制时采集数据 ===
                        if self.recording and not self.gripper_control_in_progress:
                            self.control_step()
-                      
+
                        # 增加控制步数计数器（无论是否保存数据）
                        if self.recording and not self.gripper_control_in_progress:
                            self.control_step_counter += 1
-                          
+
                            # 只有在保存间隔时才增加数据步数计数器
                            if self.control_step_counter % self.save_interval == 0:
                                self.step_counter += 1
-                      
-                       #* === 步骤6: 检查退出条件 ===
+
+                       #* === 步骤5: 检查退出条件 ===
                        if self.should_exit:
                            rospy.loginfo(f"[STOP] 录制已停止，当前步数: {self.step_counter}")
                            rospy.loginfo("[Terminate] 发送终止信号，停止机械臂控制...")
@@ -511,11 +524,11 @@ class CollectDataWithTeleop2:
                            except Exception as e:
                                rospy.logerr(f"停止机械臂控制时出错: {e}")
                            break
-                      
-                       #* === 步骤7: 频率控制 ===
+
+                       #* === 步骤6: 频率控制 ===
                        elapsed = time.time() - loop_start
                        sleep_time = max(0, self.dt - elapsed)
-                      
+
                        #* 性能监控
                        if i % 60 == 0:
                            if self.should_exit:
@@ -527,13 +540,12 @@ class CollectDataWithTeleop2:
                            else:
                                status = "[PAUSE] 暂停中"
                            rospy.loginfo(f"{status} - 第 {i} 步: {elapsed*1000:.1f}ms (target: {self.dt*1000:.1f}ms), 控制步: {self.control_step_counter}, 已记录: {self.step_counter} 步")
-                      
+
                        if sleep_time > 0:
                            time.sleep(sleep_time)
                        elif elapsed > self.dt * 1.2:
-                        #    rospy.logwarn(f"拍照 + 控制循环 超时: 第 {i} 步: {elapsed*1000:.1f}ms")
-                        pass
-                      
+                           pass
+
                        if time.time() - start_time > self.duration:
                            rospy.loginfo("[Done] 采集完成，保存数据...")
                            break
@@ -550,13 +562,21 @@ class CollectDataWithTeleop2:
                        self.fa.stop_skill()
                    except:
                        pass
-                  
+
                    # 停止键盘监听
                    if keyboard_listener:
                        keyboard_listener.stop()
 
+                   # 关闭RealSense相机
+                   if hasattr(self, "wrist_cam") and self.wrist_cam is not None and self.wrist_cam_is_owned:
+                       try:
+                           self.wrist_cam.close()
+                           rospy.loginfo("[OK] RealSense腕部相机已关闭")
+                       except Exception as e:
+                           rospy.logerr(f"关闭RealSense相机时出错: {e}")
+
                    rospy.loginfo("Data collection ended")
-                  
+
                    # 保存数据
                    if self.step_counter > 0:
                        rospy.loginfo(f"[Save] 保存 {self.step_counter} 步数据...")
@@ -593,60 +613,62 @@ class CollectDataWithTeleop2:
         rospy.logwarn("未采集到数据")
         return
 
-    # --- 取出三个第三视角相机的数据 ---
+    # --- 取出相机数据和机械臂数据 ---
     data_dict = {
-        '3rd_1_bgr_images': self.data_arrays['3rd_1_bgr_images'].get()[:actual_length].copy(),
-        '3rd_2_bgr_images': self.data_arrays['3rd_2_bgr_images'].get()[:actual_length].copy(),
-        '3rd_3_bgr_images': self.data_arrays['3rd_3_bgr_images'].get()[:actual_length].copy(),
-        '3rd_1_depth': self.data_arrays['3rd_1_depth'].get()[:actual_length].copy(),
-        '3rd_2_depth': self.data_arrays['3rd_2_depth'].get()[:actual_length].copy(),
-        '3rd_3_depth': self.data_arrays['3rd_3_depth'].get()[:actual_length].copy(),
-        '3rd_1_pcd': self.data_arrays['3rd_1_pcd'].get()[:actual_length].copy(),
-        '3rd_2_pcd': self.data_arrays['3rd_2_pcd'].get()[:actual_length].copy(),
-        '3rd_3_pcd': self.data_arrays['3rd_3_pcd'].get()[:actual_length].copy(),
+        '3rd_bgr_images': self.data_arrays['3rd_bgr_images'].get()[:actual_length].copy(),
+        'wrist_bgr_images': self.data_arrays['wrist_bgr_images'].get()[:actual_length].copy(),
+        '3rd_depth': self.data_arrays['3rd_depth'].get()[:actual_length].copy(),
+        '3rd_pcd': self.data_arrays['3rd_pcd'].get()[:actual_length].copy(),
         'poses': self.data_arrays['poses'].get()[:actual_length].copy(),
         'gripper_states': self.data_arrays['gripper_states'].get()[:actual_length].copy(),
         'joints': self.data_arrays['joints'].get()[:actual_length].copy()
     }
 
-    dir_names = ['3rd_1_bgr_images', '3rd_1_bgr', '3rd_2_bgr_images', '3rd_2_bgr',
-                 '3rd_3_bgr_images', '3rd_3_bgr',
-                 '3rd_1_depth', '3rd_2_depth', '3rd_3_depth',
-                 '3rd_1_pcd', '3rd_2_pcd', '3rd_3_pcd',
-                 'poses', 'gripper_states', 'joints']
+    dir_names = ['3rd_bgr_images', '3rd_bgr', 'wrist_bgr_images', 'wrist_bgr',
+                 '3rd_depth', '3rd_pcd', 'poses', 'gripper_states', 'joints']
 
     # 保存指令
-    with open(os.path.join(save_dir, self.task_name, f"trail_{self.trail}", "instruction.txt"), 'w') as f:
+    with open(os.path.join(trail_dir, "instruction.txt"), 'w') as f:
         f.write(self.instruction)
 
-    # 保存三个相机的外参矩阵
+    # 保存ZED相机的外参矩阵
     extrinsics = {
-        '3rd_1': get_cam_extrinsic("3rd_1"),
-        '3rd_2': get_cam_extrinsic("3rd_2"),
-        '3rd_3': get_cam_extrinsic("3rd_3")
+        '3rd_1': get_cam_extrinsic("3rd_1")
     }
-    with open(os.path.join(save_dir, self.task_name, f"trail_{self.trail}", "extrinsics.pkl"), 'wb') as f:
+    with open(os.path.join(trail_dir, "extrinsics.pkl"), 'wb') as f:
         pkl.dump(extrinsics, f, protocol=pkl.HIGHEST_PROTOCOL)
 
     for dir_name in dir_names:
-        dir_path = os.path.join(save_dir, self.task_name, f"trail_{self.trail}", dir_name)
+        dir_path = os.path.join(trail_dir, dir_name)
         os.makedirs(dir_path, exist_ok=True)
 
-        # 保存图像文件（PNG格式）
-        if dir_name in ['3rd_1_bgr_images', '3rd_2_bgr_images', '3rd_3_bgr_images']:
+        # 保存ZED图像文件（PNG格式）
+        if dir_name == '3rd_bgr_images':
             print(f"正在保存 {dir_name} 图像文件")
             for i in range(actual_length):
                 img_path = os.path.join(dir_path, f"{i:06d}.png")
                 cv2.imwrite(img_path, data_dict[dir_name][i])
 
-        # 保存BGR数组（PKL格式）
-        elif dir_name in ['3rd_1_bgr', '3rd_2_bgr', '3rd_3_bgr']:
+        # 保存ZED BGR数组（PKL格式）
+        elif dir_name == '3rd_bgr':
             print(f"正在保存 {dir_name}（BGR数组pkl）")
-            # 从对应的images数据中取
-            source_key = dir_name.replace('_bgr', '_bgr_images')
             for i in range(actual_length):
                 with open(os.path.join(dir_path, f"{i:06d}.pkl"), 'wb') as f:
-                    pkl.dump(data_dict[source_key][i], f, protocol=pkl.HIGHEST_PROTOCOL)
+                    pkl.dump(data_dict['3rd_bgr_images'][i], f, protocol=pkl.HIGHEST_PROTOCOL)
+
+        # 保存RealSense腕部图像文件（PNG格式）
+        elif dir_name == 'wrist_bgr_images':
+            print(f"正在保存 {dir_name} 图像文件")
+            for i in range(actual_length):
+                img_path = os.path.join(dir_path, f"{i:06d}.png")
+                cv2.imwrite(img_path, data_dict[dir_name][i])
+
+        # 保存RealSense腕部BGR数组（PKL格式）
+        elif dir_name == 'wrist_bgr':
+            print(f"正在保存 {dir_name}（BGR数组pkl）")
+            for i in range(actual_length):
+                with open(os.path.join(dir_path, f"{i:06d}.pkl"), 'wb') as f:
+                    pkl.dump(data_dict['wrist_bgr_images'][i], f, protocol=pkl.HIGHEST_PROTOCOL)
 
         # 保存其他数组数据
         else:
@@ -655,56 +677,57 @@ class CollectDataWithTeleop2:
                 with open(os.path.join(dir_path, f"{i:06d}.pkl"), 'wb') as f:
                     pkl.dump(data_dict[dir_name][i], f, protocol=pkl.HIGHEST_PROTOCOL)
 
-    rospy.loginfo(f"数据已保存到: {save_dir}")
+    rospy.loginfo(f"数据已保存到: {trail_dir}")
 
-      
+
 def main():
     """主函数 - 支持连续采集多条轨迹"""
-    frequency = 80.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）rr
-    duration=600
-    # task_name = 'put_lion_on_top_shelf'
-    task_name = 'cook_5'
+    frequency = 80.0  # 控制频率：80Hz
+    duration = 600
+    task_name = 'push_T_wrist_2'
     gripper_thres = 0.05
-    # instruction = "put the lion on the top shelf"
-    instruction = 'Scoop the pancake and place it on the tray'
-    task_idx = 5 # 起始轨迹序号
+    instruction = 'push the T block into the target'
+    task_idx = 117  # 起始轨迹序号
 
-    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_5"
-    save_interval = 4  # 每1步保存一次数据（即60/3=20Hz保存频率）
+    data_result_dir = "/media/casia/data4/wxn/3zed_data/raw_data_wrist"
+    save_interval = 4  # 每4步保存一次数据（即80/4=20Hz保存频率）
     resolution = "VGA"  # 图像分辨率：可选 "HD1080" (1080x1920) 或 "VGA" (376x672)
 
-    # push_t任务的目标关节位置
-    target_joints_cook = np.array([1.684841132467561, 0.8842280307586431, -1.7218389136359598, -1.8827389188329948, 0.8921751896732253, 1.673525678267762, 2.165940937432027])
+    # push_t任务的目标关节位置（从实际位姿获取的关节角度）
+    target_joints_push_t = np.array([-0.4107171577518772, 0.06878235154662957, -0.6016019385553567,
+                                      -2.4524345902834477, 0.02801655047270271, 2.4994749949336867,
+                                      -0.27162684883251664])
 
     # 在循环外初始化相机和机械臂（只初始化一次）
-    # 注意：必须先初始化 FrankaArm，因为它会初始化 ROS 节点
     print("[Setup] 初始化共享资源（相机和机械臂）...")
     print("[Robot] 初始化机械臂（禁用gripper）...")
     shared_fa = FrankaArm(with_gripper=False)
 
     # 移动到push_t初始状态
     print("[Robot] 将机械臂移动到push_t初始状态...")
-    shared_fa.goto_joints(target_joints_cook.tolist(), duration=5.0, ignore_virtual_walls=True)
+    shared_fa.goto_joints(target_joints_push_t.tolist(), duration=5.0, ignore_virtual_walls=True)
     rospy.sleep(1.0)
     print("[OK] 机械臂已移动到push_t初始状态")
 
     # 现在 ROS 节点已经由 FrankaArm 初始化，可以使用 rospy.loginfo 了
-    rospy.loginfo("[Start] 启动连续采集模式 - 高频遥操作数据采集系统")
+    rospy.loginfo("[Start] 启动连续采集模式 - 混合相机数据采集系统（1个ZED + 1个RealSense腕部）")
     rospy.loginfo(f"配置: {frequency}Hz控制, {frequency/save_interval}Hz保存, {duration}s, 分辨率: {resolution}")
     rospy.loginfo(f"起始轨迹序号: trail_{task_idx}")
     rospy.loginfo("="*60)
 
-    rospy.loginfo("[Camera] 初始化3个第三视角Zed相机...")
-    shared_camera = Camera(camera_type="all", zed_resolution=resolution)
+    # 初始化ZED第三视角相机（只用1个）
+    rospy.loginfo("[Camera] 初始化1个ZED第三视角相机...")
+    shared_camera = Camera(camera_type="3rd_1", zed_resolution=resolution)
 
-    # 夹爪已禁用，跳过夹爪初始化
-    # try:
-    #     rospy.loginfo("[Setup] 初始化夹爪状态...")
-    #     shared_fa.open_gripper()
-    #     rospy.sleep(1.0)
-    #     rospy.loginfo("[OK] 夹爪初始化完成（打开状态）")
-    # except Exception as e:
-    #     rospy.logerr(f"夹爪初始化失败: {e}")
+    # 初始化RealSense腕部相机
+    rospy.loginfo("[Camera] 初始化RealSense腕部相机...")
+    shared_wrist_cam = RSCapture(
+        name='wrist',
+        serial_number='323622271380',  # TODO: 修改为实际的序列号
+        dim=(640, 480),
+        fps=90,
+        exposure=15000  # 降低曝光值（从20000降至15000）
+    )
 
     rospy.loginfo("[OK] 共享资源初始化完成\n")
 
@@ -717,11 +740,13 @@ def main():
             print("="*60)
             print("\n🎮 控制说明:")
             print("   [R] 开始/停止录制")
-            print("   [SpaceMouse] 控制机械臂移动（XYZ平移 + 旋转）")
+            print("   [SpaceMouse] 控制机械臂移动（XY平移 + 旋转）")
+            print("   约束: Z轴高度固定不变")
             print("   注意: 夹爪已禁用")
+            print("   相机: 1个ZED第三视角 + 1个RealSense腕部")
             print("\n⏸️  等待中... 按 [R] 键开始录制\n")
 
-            collector = CollectDataWithTeleop2(
+            collector = CollectDataWithTeleopPushTWrist(
                 task_name=task_name,
                 gripper_thres=gripper_thres,
                 instruction=instruction,
@@ -730,8 +755,9 @@ def main():
                 duration=duration,
                 save_interval=save_interval,
                 resolution=resolution,
-                camera=shared_camera,  # 复用相机
-                fa=shared_fa  # 复用机械臂
+                camera=shared_camera,  # 复用ZED相机
+                fa=shared_fa,  # 复用机械臂
+                wrist_cam=shared_wrist_cam  # 复用RealSense腕部相机
             )
             collector.run_data_collection(save_dir=data_result_dir)
 
@@ -741,8 +767,6 @@ def main():
             print(f"✅  trail_{current_trail} 采集完成！共记录 {collector.step_counter} 步数据")
             print("🎉" + "="*56 + "🎉")
             print("\n⏳ 正在保存数据，请稍候...\n")
-
-            # 等待数据保存完成（已在 run_data_collection 中完成）
 
             print("💾 数据保存完成！\n")
             flush_input_buffer()  # 清空输入缓冲区
@@ -757,7 +781,7 @@ def main():
                 # 自动复位机械臂到push_t初始位置
                 print("\n🤖 正在复位机械臂到push_t初始位置...", flush=True)
                 try:
-                    shared_fa.goto_joints(target_joints_cook.tolist(), duration=5.0, ignore_virtual_walls=True)
+                    shared_fa.goto_joints(target_joints_push_t.tolist(), duration=5.0, ignore_virtual_walls=True)
                     rospy.sleep(1.0)
                     print("✅ 机械臂已复位到push_t初始位置！", flush=True)
                 except Exception as e:
@@ -807,14 +831,17 @@ def main():
     rospy.loginfo("\n[Cleanup] 清理共享资源...")
     try:
         shared_camera.stop()
-        rospy.loginfo("[OK] 相机已关闭")
+        rospy.loginfo("[OK] ZED相机已关闭")
     except Exception as e:
-        rospy.logerr(f"关闭相机时出错: {e}")
+        rospy.logerr(f"关闭ZED相机时出错: {e}")
+
+    try:
+        shared_wrist_cam.close()
+        rospy.loginfo("[OK] RealSense腕部相机已关闭")
+    except Exception as e:
+        rospy.logerr(f"关闭RealSense相机时出错: {e}")
 
     rospy.loginfo("[Done] 程序结束")
-      
+
 if __name__ == "__main__":
    main()
-
-
-
