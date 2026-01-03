@@ -81,6 +81,8 @@ Thumbs.db
 debug_img/
 *.pyc/
 metaworld_results/
+
+Wan/DiffSynth-Studio/projection_test_results/
 # Temporary files
 *.tmp
 *.temp
