@@ -640,13 +640,13 @@ def main():
     frequency = 80.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）
     duration=600
     # task_name = 'put_lion_on_top_shelf'
-    task_name = 'put_the_lion_on_the_top_shelf'
+    task_name = 'put_the_lion_on_the_top_shelf_20260105'
     gripper_thres = 0.05
     # instruction = "put the lion on the top shelf"
     instruction = "put the lion on the top shelf"
-    task_idx = 4  # 起始轨迹序号
+    task_idx =10  # 起始轨迹序号 # TODO
 
-    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_4"
+    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_5" # TODO
     save_interval = 3  # 每1步保存一次数据（即60/3=20Hz保存频率）
     resolution = "VGA"  # 图像分辨率：可选 "HD1080" (1080x1920) 或 "VGA" (376x672)
 
