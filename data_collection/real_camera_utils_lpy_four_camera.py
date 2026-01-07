@@ -47,6 +47,10 @@ def get_cam_extrinsic(type):
         # trans=np.array([1.0177272694179353, -0.0510392240262284, 0.37670959286453537])
         trans=np.array([1.0177272694179353, -0.0360392240262284, 0.38670959286453537])
         quat=np.array([ -0.5972629758372091, -0.6127793052227456,0.38451047230872026,0.3463093378321404]) # x y z w
+    elif type == "3rd_4":
+        # TODO: 填充第三个第三视角相机的实际外参
+        trans=np.array([0.4600013170107903, -0.12241753962996947, 1.298999547431734])
+        quat=np.array([ 0.024911613499121472, -1.0698313262323412, -0.05225222536415482, 0.000133306315653054]) # x y z w
     else:
         raise ValueError("Invalid type")
 
@@ -347,12 +351,14 @@ class Camera:
         static_serial_number_1 = 37019563  # top上相机
         static_serial_number_2 = 34438347 # 右边相机
         static_serial_number_3 = 30519310  # top下相机
+        static_serial_number_4 = 31223472  # top 相机
         if camera_type == "all":
             # 三个第三视角相机
             self.cams =  [
                 ZedCam(serial_number=static_serial_number_1, zed_resolution=zed_resolution),
                 ZedCam(serial_number=static_serial_number_2, zed_resolution=zed_resolution),
                 ZedCam(serial_number=static_serial_number_3, zed_resolution=zed_resolution),
+                ZedCam(serial_number=static_serial_number_4, zed_resolution=zed_resolution)
             ]
             self.camera_types = ["3rd_1", "3rd_2", "3rd_3", "3rd_4"]
 
@@ -368,6 +374,9 @@ class Camera:
             self.cams = [ZedCam(serial_number=static_serial_number_3, zed_resolution=zed_resolution)]
             self.camera_types = ["3rd_3"]
 
+        elif camera_type == "3rd_4":
+            self.cams = [ZedCam(serial_number=static_serial_number_4, zed_resolution=zed_resolution)]
+            self.camera_types = ["3rd_4"]
 
         else:
             raise ValueError("Invalid camera type, please choose from 'all', '3rd_1', '3rd_2', '3rd_3'")
@@ -454,7 +463,7 @@ class Camera:
             
 if __name__ == "__main__":
     # 测试所有三个相机
-    test_camera_type = "3rd_3"  # 使用所有三个相机
+    test_camera_type = "3rd_4"  # 使用所有三个相机
 
     cameras = Camera(camera_type=test_camera_type)
 
