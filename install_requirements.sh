@@ -75,3 +75,10 @@ fi
 
 echo ""
 echo "完整日志已保存到: ./install_log.txt"
+
+cd finetune
+pip install -e .
+
+pip install 'git+https://github.com/facebookresearch/pytorch3d.git@stable'
+cd  finetune/bridgevla/libs/point-renderer
+pip install -e .

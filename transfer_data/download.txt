@@ -12,4 +12,4 @@ modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' --include '
 modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' --include 'data/train-000*' --local_dir './local_dir'
 
 针对私有仓库，需要附加token
-modelscope --token 'YOUR_MODELSCOPE_ACCESS_TOKEN' download --dataset 'YOUR_DATASET_NAME' 
+modelscope --token 'YOUR_MODELSCOPE_ACCESS_TOKEN' download --dataset 'YOUR_DATASET_NAME'   # 注意区分到底是 --dataset 还是 --model
