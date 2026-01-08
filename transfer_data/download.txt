@@ -1,0 +1,15 @@
+1. 指定下载单个文件
+modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' dataset_infos.json
+2. 下载多个文件
+modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' dataset_infos.json README.md
+3. 下载某些文件
+modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' --include 'data/train-000*'
+4. 过滤某些文件
+modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' --exclude 'data/train-000*'
+5. 指定下载cache_dir
+modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' --include 'data/train-000*' --cache_dir './cache_dir'
+6. 指定下载local_dir
+modelscope download --dataset 'Tongyi-DataEngine/SA1B-Dense-Caption' --include 'data/train-000*' --local_dir './local_dir'
+
+针对私有仓库，需要附加token
+modelscope --token 'YOUR_MODELSCOPE_ACCESS_TOKEN' download --dataset 'YOUR_DATASET_NAME'   # 注意区分到底是 --dataset 还是 --model

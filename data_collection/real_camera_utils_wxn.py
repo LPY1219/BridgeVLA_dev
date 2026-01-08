@@ -34,18 +34,17 @@ def save_rgb_image(rgb_array, save_path):
 def get_cam_extrinsic(type):
     if type == "3rd_1":
         # TODO: 填充第一个第三视角相机的实际外参
-        trans=np.array([0.005296609417704192, -0.3157368291363717, 0.33600708872144163])
+        trans=np.array([0.005296609417704192, -0.3157368291363717, 0.32600708872144163])
         quat=np.array([ -0.7548033034142615, 0.3380675715030415,-0.31014318740211866,0.4688213876957924]) # x y z w
     elif type == "3rd_2":
         # TODO: 填充第二个第三视角相机的实际外参
-        trans=np.array([0.08305056557124976, 0.4762288875573745,  0.31101059961302635])
+        trans=np.array([0.08305056557124976, 0.4562288875573745,  0.31101059961302635])
         quat=np.array([ -0.366385841322638, 0.7238074691479117,  -0.532059243228617,  0.2424399812393253]) # x y z w
         # trans=np.array([0.41319647185014996, 0.671280823421573,  0.31847372597347334])
         # quat=np.array([ -0.004178189428432915, 0.8100601972017345,  -0.5859203348840233,  0.0028462131169476428]) # x y z w
     elif type == "3rd_3":
         # TODO: 填充第三个第三视角相机的实际外参
-        # trans=np.array([1.0177272694179353, -0.0510392240262284, 0.37670959286453537])
-        trans=np.array([1.0177272694179353, -0.0360392240262284, 0.38670959286453537])
+        trans=np.array([1.0177272694179353, -0.0510392240262284, 0.37670959286453537])
         quat=np.array([ -0.5972629758372091, -0.6127793052227456,0.38451047230872026,0.3463093378321404]) # x y z w
     else:
         raise ValueError("Invalid type")
@@ -343,18 +342,19 @@ class Camera:
             timestamp_tolerance_ms: 时间戳容差（毫秒）
             zed_resolution: ZED相机硬件分辨率，可选 "HD1080" 或 "VGA"
         """
-        # TODO: 填充三个第三视角相机的实际序列号
-        static_serial_number_1 = 37019563  # top上相机
-        static_serial_number_2 = 34438347 # 右边相机
-        static_serial_number_3 = 30519310  # top下相机
+        # 修改为实际连接的ZED相机序列号
+        static_serial_number_1 = 30519310  # 当前连接的ZED 2i相机
+        static_serial_number_2 = 30519310  # 备用（如果只有一个相机，使用同一个序列号）
+        static_serial_number_3 = 30519310  # 备用（如果只有一个相机，使用同一个序列号）
+
         if camera_type == "all":
             # 三个第三视角相机
             self.cams =  [
                 ZedCam(serial_number=static_serial_number_1, zed_resolution=zed_resolution),
                 ZedCam(serial_number=static_serial_number_2, zed_resolution=zed_resolution),
-                ZedCam(serial_number=static_serial_number_3, zed_resolution=zed_resolution),
+                ZedCam(serial_number=static_serial_number_3, zed_resolution=zed_resolution)
             ]
-            self.camera_types = ["3rd_1", "3rd_2", "3rd_3", "3rd_4"]
+            self.camera_types = ["3rd_1", "3rd_2", "3rd_3"]
 
         elif camera_type == "3rd_1":
             self.cams = [ZedCam(serial_number=static_serial_number_1, zed_resolution=zed_resolution)]
@@ -367,7 +367,6 @@ class Camera:
         elif camera_type == "3rd_3":
             self.cams = [ZedCam(serial_number=static_serial_number_3, zed_resolution=zed_resolution)]
             self.camera_types = ["3rd_3"]
-
 
         else:
             raise ValueError("Invalid camera type, please choose from 'all', '3rd_1', '3rd_2', '3rd_3'")
@@ -454,7 +453,7 @@ class Camera:
             
 if __name__ == "__main__":
     # 测试所有三个相机
-    test_camera_type = "3rd_3"  # 使用所有三个相机
+    test_camera_type = "3rd_1"  # 使用所有三个相机
 
     cameras = Camera(camera_type=test_camera_type)
 
@@ -465,7 +464,7 @@ if __name__ == "__main__":
     # 因为这种逆序操作会破坏连续性，后续如果使用reshape这类操作时会产生错位的数据
     def convert_pcd_to_base(type, pcd):
         transform = get_cam_extrinsic(type)
-        print(transform)
+
         h, w = pcd.shape[:2]
         pcd = pcd.reshape(-1, 3)
 

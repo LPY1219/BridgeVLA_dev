@@ -87,6 +87,7 @@ class CollectDataWithTeleop2:
        self.gripper_thres = gripper_thres
        self.instruction = instruction
        self.save_interval = save_interval  # 保存间隔
+       self.initial_joints=[ 5.84113346e-02,-3.28556887e-01, -5.57625597e-06, -2.61241058e+00,5.14608518e-02 , 2.26069062e+00  ,7.70146633e-01]
 
        # 设置图像分辨率
        self.resolution = resolution
@@ -103,7 +104,7 @@ class CollectDataWithTeleop2:
        if fa is None:
            rospy.loginfo("[Robot] 初始化机械臂...")
            self.fa = FrankaArm()
-           self.fa.reset_joints()
+           self.fa.goto_joints(self.initial_joints)
            self.fa_is_owned = True  # 标记机械臂是否由此对象创建
        else:
            rospy.loginfo("[Robot] 复用已初始化的机械臂...")
@@ -640,11 +641,11 @@ def main():
     frequency = 80.0  # 控制频率：60Hz（从80Hz降低以适应三相机采集）
     duration=600
     # task_name = 'put_lion_on_top_shelf'
-    task_name = 'put_the_lion_on_the_top_shelf_20260105'
+    task_name = 'pour'
     gripper_thres = 0.05
     # instruction = "put the lion on the top shelf"
-    instruction = "put the lion on the top shelf"
-    task_idx =10  # 起始轨迹序号 # TODO
+    instruction = "pour the water from the cup into the plate"
+    task_idx =11  # 起始轨迹序号 # TODO
 
     data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_5" # TODO
     save_interval = 3  # 每1步保存一次数据（即60/3=20Hz保存频率）
@@ -655,8 +656,6 @@ def main():
     print("[Setup] 初始化共享资源（相机和机械臂）...")
     print("[Robot] 初始化机械臂...")
     shared_fa = FrankaArm()
-    shared_fa.reset_joints()
-
     # 现在 ROS 节点已经由 FrankaArm 初始化，可以使用 rospy.loginfo 了
     rospy.loginfo("[Start] 启动连续采集模式 - 高频遥操作数据采集系统")
     rospy.loginfo(f"配置: {frequency}Hz控制, {frequency/save_interval}Hz保存, {duration}s, 分辨率: {resolution}")
@@ -702,6 +701,7 @@ def main():
                 camera=shared_camera,  # 复用相机
                 fa=shared_fa  # 复用机械臂
             )
+            shared_fa.goto_joints(collector.initial_joints)
             collector.run_data_collection(save_dir=data_result_dir)
 
             # 采集完成后询问用户是否继续
@@ -726,7 +726,7 @@ def main():
                 # 自动复位机械臂到初始位置并打开夹爪
                 print("\n🤖 正在复位机械臂到初始位置...", flush=True)
                 try:
-                    shared_fa.reset_joints()
+                    shared_fa.goto_joints(collector.initial_joints)
                     print("✅ 机械臂已复位到初始位置！", flush=True)
                     print("✋ 正在打开夹爪...", flush=True)
                     shared_fa.open_gripper()
