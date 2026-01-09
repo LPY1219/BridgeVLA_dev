@@ -1,7 +1,7 @@
 import sys
 
 import bridgevla_agent_dm as bridgevla_agent
-from utils.metaworld_runner import MetaworldRunner
+from utils.metaworld_runner import MetaworldRunnerGrasping
 # print(MetaworldRunner.__mro__)
 from termcolor import cprint
 import os
@@ -12,12 +12,12 @@ setup_project_paths()
 
 def eval(args):
     args.output_dir = os.path.join(args.output_dir, args.task)
-    policy = bridgevla_agent.RVTAgent(args)
-    env_runner = MetaworldRunner(
+    env_runner = MetaworldRunnerGrasping(
         output_dir=args.output_dir,
         task_name=args.task,
         device=args.device
     )
+    policy = bridgevla_agent.RVTAgent(args)
     runner_log = env_runner.run(policy, save_video=True)
 
     cprint(f"---------------- Eval Results --------------", 'magenta')

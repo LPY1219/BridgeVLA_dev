@@ -102,16 +102,19 @@ export CUDA_VISIBLE_DEVICES=3
 # )
 
 TASKS=(
-    # "peg-unplug-side"
-    # "dial-turn"
-    # "handle-pull"
-    # "lever-pull"
-    # "reach"
-    # "reach-wall"
-    # "button-press-topdown"
-    "button-press"
+#    "door-open"
+#    "door-close"
+#    "basketball"
+   "button-press"
+#    "button-press-topdown"
+#    "faucet-close"
+#    "faucet-open"
+#    "handle-press"
+#    "shelf-place"
+#    "hammer"
+#    "assembly"
 )
-CONSTANT_GRIPPER_NUM=0.8
+CONSTANT_GRIPPER_NUM=1.0
 # 如果只想测试单个任务，可以这样设置：
 # TASKS=("push-wall")
 
@@ -221,7 +224,7 @@ for TASK in "${TASKS[@]}"; do
     
     # 执行推理（使用VAE decode feature版本）
     TASK_START_TIME=$(date +%s)
-    if xvfb-run -a python "${ROOT_PATH}/finetune/MetaWorld/eval_dm.py" "${PYTHON_ARGS[@]}"; then
+    if xvfb-run -a python "${ROOT_PATH}/finetune/MetaWorld/eval_dm_grasp.py" "${PYTHON_ARGS[@]}"; then
         TASK_END_TIME=$(date +%s)
         TASK_DURATION=$((TASK_END_TIME - TASK_START_TIME))
         echo ""

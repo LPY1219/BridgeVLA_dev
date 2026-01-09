@@ -143,7 +143,7 @@ class PointCloudGenerator(object):
             cam_mat = np.array(((f, 0, self.img_width / 2), (0, f, self.img_height / 2), (0, 0, 1)))
             self.cam_mats.append(cam_mat)
     
-    def get_c2w_transform(self, cam_id):
+    def get_camera_extrinsic_matrix(self, cam_id):
         camera_pos = self.sim.data.cam_xpos[cam_id]
         camera_rot = self.sim.data.cam_xmat[cam_id].reshape(3, 3)
         
@@ -203,7 +203,7 @@ class PointCloudGenerator(object):
             # b2w_r = quat2Mat([0, 1, 0, 0])
             # c2w_r = np.matmul(c2b_r, b2w_r)
             cam_body_id = self.env_all_cameras.index(self.cam_names[cam_i])
-            c2w = self.get_c2w_transform(cam_body_id)
+            c2w = self.get_camera_extrinsic_matrix(cam_body_id)
             transformed_cloud = o3d_cloud.transform(c2w)
             o3d_clouds.append(transformed_cloud)
 

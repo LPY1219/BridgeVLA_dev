@@ -24,6 +24,7 @@ def get_root_path():
         "/DATA/disk1/lpy/BridgeVLA_dev",
         "/home/lpy/BridgeVLA_dev",
         "/mnt/data/cyx/workspace/BridgeVLA_dev",
+        "/DATA/disk1/cyx/BridgeVLA_dev",
     ]
     for path in possible_paths:
         if os.path.exists(path):
@@ -1851,10 +1852,10 @@ class RVTAgent:
 
     def predict_action(self, observation: dict):
         observation = observation
-        pcd = observation["point_cloud"][0, ...].cpu().numpy()
+        pcd = observation["point_cloud"][...].cpu().numpy()
         start_pcd, start_rgb = pcd[..., :3], pcd[..., 3:]
 
-        start_xyz = observation["agent_pos"][0, :3].cpu().numpy()
+        start_xyz = observation["agent_pos"][:3].cpu().numpy()
         start_pose = np.concatenate([
                         start_xyz, 
                         np.array([0, 0, 0, 1])], 
@@ -1954,10 +1955,15 @@ class RVTAgent:
         )  # (num_frames, 3)
         
         pred_gripper = output['gripper_predictions']  # (T-1,)
+        if self.args.constant_gripper_num is not None:
+            pred_gripper = np.full_like(pred_gripper, self.args.constant_gripper_num)
+            # print(pred_gripper)
         
         pred_sequence_length = pred_position.shape[0]
         
-        delta_action_position = pred_position[1:] - pred_position[:-1]  # (T, 3)
-        action = np.concatenate([50*delta_action_position, pred_gripper[:, None]], axis=1)  # (T, 4)
-        # action = np.concatenate([pred_position[1:], pred_gripper[:, None]], axis=1)  # (T, 4)
+        # delta_action_position = pred_position[1:] - pred_position[:-1]  # (T, 3)
+        # action = np.concatenate([50*delta_action_position, pred_gripper[:, None]], axis=1)  # (T, 4)
+
+        action = np.concatenate([pred_position[1:], pred_gripper[:, None]], axis=1)  # (T, 4)
+        # action = action[:10] # only keep the first 10 actions
         return action
