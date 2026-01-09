@@ -94,3 +94,5 @@ Wan/DiffSynth-Studio/examples/wanvideo/model_inference/temp_ckpt/
 .vscode/
 ckpt/
 metaworld_results/
+RLBench_Data/
+finetune/RLBench_DM/ckpt
