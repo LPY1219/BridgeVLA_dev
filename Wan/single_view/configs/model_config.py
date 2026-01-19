@@ -26,7 +26,7 @@ class ModelConfig:
     vae_torch_dtype: str = "float32"  # "float16" or "float32"
 
     # Colormap编码配置
-    colormap_name: str = "viridis"  # heatmap转colormap使用的颜色映射
+    colormap_name: str = "jet"  # heatmap转colormap使用的颜色映射
     colormap_resolution: int = 256  # colormap分辨率
 
     # 推理相关配置

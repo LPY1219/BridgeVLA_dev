@@ -19,7 +19,7 @@ import os
 def create_heatmap_overlay(rgb_image: np.ndarray,
                           heatmap: np.ndarray,
                           alpha: float = 0.6,
-                          colormap: str = 'viridis') -> np.ndarray:
+                          colormap: str = 'jet') -> np.ndarray:
     """
     将heatmap叠加到RGB图像上
 
@@ -53,7 +53,7 @@ def create_heatmap_overlay(rgb_image: np.ndarray,
 def plot_heatmap_sequence(heatmap_sequence: Union[np.ndarray, torch.Tensor],
                          titles: Optional[List[str]] = None,
                          figsize: Tuple[int, int] = (15, 3),
-                         colormap: str = 'viridis',
+                         colormap: str = 'jet',
                          save_path: Optional[str] = None) -> plt.Figure:
     """
     绘制heatmap序列
@@ -101,7 +101,7 @@ def plot_comparison_grid(pred_sequence: Union[np.ndarray, torch.Tensor],
                         gt_sequence: Union[np.ndarray, torch.Tensor],
                         rgb_image: Optional[np.ndarray] = None,
                         figsize: Tuple[int, int] = (15, 6),
-                        colormap: str = 'viridis',
+                        colormap: str = 'jet',
                         save_path: Optional[str] = None) -> plt.Figure:
     """
     绘制预测与ground truth的对比网格
@@ -164,7 +164,7 @@ def plot_comparison_grid(pred_sequence: Union[np.ndarray, torch.Tensor],
 def create_heatmap_animation(heatmap_sequence: Union[np.ndarray, torch.Tensor],
                            rgb_image: Optional[np.ndarray] = None,
                            fps: int = 2,
-                           colormap: str = 'viridis',
+                           colormap: str = 'jet',
                            save_path: Optional[str] = None) -> animation.FuncAnimation:
     """
     创建heatmap序列动画
@@ -267,7 +267,7 @@ def plot_peak_trajectory(heatmap_sequence: Union[np.ndarray, torch.Tensor],
         ax.imshow(rgb_image, extent=[0, W, H, 0])
     else:
         # 显示最后一帧heatmap作为背景
-        ax.imshow(heatmap_sequence[-1], cmap='viridis', alpha=0.3, extent=[0, W, H, 0])
+        ax.imshow(heatmap_sequence[-1], cmap='jet', alpha=0.3, extent=[0, W, H, 0])
 
     # 绘制轨迹
     ax.plot(trajectory[:, 1], trajectory[:, 0], 'ro-', linewidth=2, markersize=8,

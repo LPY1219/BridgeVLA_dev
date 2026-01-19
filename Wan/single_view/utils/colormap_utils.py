@@ -31,13 +31,13 @@ except ImportError as e:
     from diffusers import AutoencoderKLWan
 
 
-def convert_heatmap_to_colormap(heatmap, colormap_name='viridis'):
+def convert_heatmap_to_colormap(heatmap, colormap_name='jet'):
     """
     Convert heatmap to RGB image using matplotlib colormap (optimized)
 
     Args:
         heatmap: 2D numpy array representing the heatmap
-        colormap_name: Name of the colormap (default: 'viridis')
+        colormap_name: Name of the colormap (default: 'jet')
 
     Returns:
         RGB image as numpy array with shape (H, W, 3) and dtype float32
@@ -52,13 +52,13 @@ def convert_heatmap_to_colormap(heatmap, colormap_name='viridis'):
     return rgb_image.astype(np.float32)
 
 
-def convert_heatmap_sequence_to_colormap(heatmap_sequence, colormap_name='viridis'):
+def convert_heatmap_sequence_to_colormap(heatmap_sequence, colormap_name='jet'):
     """
     Convert a sequence of heatmaps to colormap video
 
     Args:
         heatmap_sequence: numpy array with shape (T, H, W)
-        colormap_name: Name of the colormap (default: 'viridis')
+        colormap_name: Name of the colormap (default: 'jet')
 
     Returns:
         RGB video as numpy array with shape (T, H, W, 3)
@@ -72,13 +72,13 @@ def convert_heatmap_sequence_to_colormap(heatmap_sequence, colormap_name='viridi
     return colormap_video
 
 
-def extract_heatmap_from_colormap(rgb_image, colormap_name='viridis'):
+def extract_heatmap_from_colormap(rgb_image, colormap_name='jet'):
     """
     Extract heatmap from RGB colormap image by finding closest colormap values (adaptive)
 
     Args:
         rgb_image: RGB image with shape (H, W, 3)
-        colormap_name: Name of the colormap used (default: 'viridis')
+        colormap_name: Name of the colormap used (default: 'jet')
 
     Returns:
         Extracted heatmap as numpy array with shape (H, W) and dtype float32
@@ -117,13 +117,13 @@ def extract_heatmap_from_colormap(rgb_image, colormap_name='viridis'):
     return extracted_heatmap.astype(np.float32)
 
 
-def extract_heatmap_sequence_from_colormap(colormap_video, colormap_name='viridis'):
+def extract_heatmap_sequence_from_colormap(colormap_video, colormap_name='jet'):
     """
     Extract heatmap sequence from colormap video
 
     Args:
         colormap_video: RGB video with shape (T, H, W, 3)
-        colormap_name: Name of the colormap used (default: 'viridis')
+        colormap_name: Name of the colormap used (default: 'jet')
 
     Returns:
         Heatmap sequence as numpy array with shape (T, H, W)

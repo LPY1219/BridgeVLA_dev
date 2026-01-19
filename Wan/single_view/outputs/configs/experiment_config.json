@@ -12,7 +12,7 @@
     "sequence_length": 5,
     "vae_subfolder": "vae",
     "vae_torch_dtype": "float32",
-    "colormap_name": "viridis",
+    "colormap_name": "jet",
     "colormap_resolution": 256,
     "num_inference_steps": 20,
     "guidance_scale": 7.5,

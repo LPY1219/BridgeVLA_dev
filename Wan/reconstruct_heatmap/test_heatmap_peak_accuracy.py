@@ -57,7 +57,7 @@ def generate_gaussian_heatmap(height=256, width=256, center_x=None, center_y=Non
     return gaussian_normalized, (center_x, center_y)
 
 
-def convert_heatmap_to_colormap(heatmap, colormap_name='viridis'):
+def convert_heatmap_to_colormap(heatmap, colormap_name='jet'):
     """
     Convert heatmap to RGB image using matplotlib colormap (optimized)
     """
@@ -71,7 +71,7 @@ def convert_heatmap_to_colormap(heatmap, colormap_name='viridis'):
     return rgb_image.astype(np.float32)
 
 
-def extract_heatmap_from_colormap(rgb_image, colormap_name='viridis'):
+def extract_heatmap_from_colormap(rgb_image, colormap_name='jet'):
     """
     Extract heatmap from RGB colormap image by finding closest colormap values (adaptive)
     """
@@ -199,14 +199,14 @@ def visualize_heatmap_comparison(original_heatmap, decoded_heatmap,
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
     # Original heatmap
-    im1 = axes[0].imshow(original_heatmap, cmap='viridis', interpolation='nearest')
+    im1 = axes[0].imshow(original_heatmap, cmap='jet', interpolation='nearest')
     axes[0].scatter(original_peak[0], original_peak[1], c='red', s=100, marker='x', linewidths=3)
     axes[0].set_title(f'Original Heatmap (Test {test_id})\nPeak: ({original_peak[0]}, {original_peak[1]})')
     axes[0].axis('off')
     plt.colorbar(im1, ax=axes[0])
 
     # Decoded heatmap
-    im2 = axes[1].imshow(decoded_heatmap, cmap='viridis', interpolation='nearest')
+    im2 = axes[1].imshow(decoded_heatmap, cmap='jet', interpolation='nearest')
     axes[1].scatter(decoded_peak[0], decoded_peak[1], c='red', s=100, marker='x', linewidths=3)
     axes[1].set_title(f'Decoded Heatmap (Test {test_id})\nPeak: ({decoded_peak[0]}, {decoded_peak[1]})')
     axes[1].axis('off')
@@ -273,7 +273,7 @@ def run_peak_accuracy_tests(num_tests=20, sigma=5):
         print(f"Generated heatmap with center: {true_center}, detected peak: {original_peak}")
 
         # Step 2: Convert to colormap and process through VAE
-        original_colormap = convert_heatmap_to_colormap(original_heatmap, 'viridis')
+        original_colormap = convert_heatmap_to_colormap(original_heatmap, 'jet')
         colormap_5d = convert_color_to_wan_format(original_colormap)
 
         # Step 3: Encode and decode
@@ -281,7 +281,7 @@ def run_peak_accuracy_tests(num_tests=20, sigma=5):
         decoded_colormap = convert_from_wan_format(decoded_5d)
 
         # Step 4: Extract heatmap from decoded colormap
-        decoded_heatmap = extract_heatmap_from_colormap(decoded_colormap, 'viridis')
+        decoded_heatmap = extract_heatmap_from_colormap(decoded_colormap, 'jet')
         decoded_peak = find_peak_location(decoded_heatmap)
 
         # Step 5: Calculate peak distance

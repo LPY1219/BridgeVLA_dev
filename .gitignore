@@ -88,11 +88,22 @@ Thumbs.db
 swanlog/
 wandb/
 vpn/
-Wan/DiffSynth-Studio/models/Wan-AI/Wan2.1-T2V-1.3B/
-Wan/DiffSynth-Studio/examples/wanvideo/model_inference/temp_ckpt/
 
 .vscode/
 ckpt/
 metaworld_results/
 RLBench_Data/
 finetune/RLBench_DM/ckpt
+
+Wan/DiffSynth-Studio/models/Wan-AI/
+Wan/DiffSynth-Studio/debug_log/
+Wan/DiffSynth-Studio/heatmap_inference_results/
+Wan/DiffSynth-Studio/projection_test_results/
+Wan/DiffSynth-Studio/examples/wanvideo/model_inference/mvtrack_inference_results/
+Wan/DiffSynth-Studio/examples/wanvideo/model_inference/temp_ckpt/
+*.safetensors
+Wan/DiffSynth-Studio/__pycache__
+Wan/DiffSynth-Studio/__pycache__/
+
+finetune/RLBench_DM
+finetune/MetaWorld

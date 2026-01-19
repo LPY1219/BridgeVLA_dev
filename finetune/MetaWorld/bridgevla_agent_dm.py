@@ -711,7 +711,7 @@ class HeatmapInferenceMVRotGrip:
             heatmap_features=heatmap_features,
             num_future_frames=num_future_frames,
             heatmap_images=heatmap_images,
-            colormap_name='viridis',
+            colormap_name='jet',
         )
 
         # 4. 解码预测结果（预测的是delta值）
@@ -848,7 +848,7 @@ class HeatmapInferenceMVRotGrip:
 
         return delta_degrees
 
-    def find_peak_position(self, heatmap_image: Image.Image, colormap_name: str = 'viridis') -> Tuple[int, int]:
+    def find_peak_position(self, heatmap_image: Image.Image, colormap_name: str = 'jet') -> Tuple[int, int]:
         """
         在热力图中找到峰值位置
 
@@ -879,7 +879,7 @@ class HeatmapInferenceMVRotGrip:
         """
         return np.sqrt((pred_peak[0] - gt_peak[0])**2 + (pred_peak[1] - gt_peak[1])**2)
 
-    def find_peaks_batch(self, heatmap_images: List[List[Image.Image]], colormap_name: str = 'viridis') -> List[List[Tuple[int, int]]]:
+    def find_peaks_batch(self, heatmap_images: List[List[Image.Image]], colormap_name: str = 'jet') -> List[List[Tuple[int, int]]]:
         """
         批量计算多个热力图的峰值位置（优化速度）
 
@@ -1083,7 +1083,7 @@ class HeatmapInferenceMVRotGrip:
             heatmap_features=heatmap_features,
             num_future_frames=num_future_frames,
             heatmap_images=heatmap_images,
-            colormap_name='viridis',
+            colormap_name='jet',
         )
 
         # 5. 转换logits为预测结果（预测的是delta值）
@@ -1126,13 +1126,13 @@ class HeatmapInferenceMVRotGrip:
         }
 
 
-def convert_colormap_to_heatmap(colormap_images: List[List[Image.Image]], colormap_name: str = 'viridis', resolution: int = 64) -> List[List[np.ndarray]]:
+def convert_colormap_to_heatmap(colormap_images: List[List[Image.Image]], colormap_name: str = 'jet', resolution: int = 64) -> List[List[np.ndarray]]:
     """
     将colormap格式的图像转换为heatmap数组
 
     Args:
         colormap_images: List[List[PIL.Image]] (T, num_views) - colormap格式的图像
-        colormap_name: 使用的colormap名称，默认'viridis'
+        colormap_name: 使用的colormap名称，默认'jet'
         resolution: LUT分辨率，默认64（推荐）
                    32: 快速但精度较低 (~2像素误差)
                    64: 平衡速度和精度 (~0.5像素误差，推荐)
@@ -1217,7 +1217,7 @@ def visualize_heatmaps_with_peaks(colormap_images: List[List[Image.Image]],
                                    bbox=dict(boxstyle='round', facecolor='red', alpha=0.7))
 
             # 第三行：显示heatmap数组
-            im = axes[2, view_idx].imshow(heatmap_arr, cmap='viridis', interpolation='nearest')
+            im = axes[2, view_idx].imshow(heatmap_arr, cmap='jet', interpolation='nearest')
             axes[2, view_idx].set_title(f'Heatmap Array\nShape: {heatmap_arr.shape}')
             axes[2, view_idx].axis('off')
 
@@ -1246,7 +1246,7 @@ def visualize_heatmaps_with_peaks(colormap_images: List[List[Image.Image]],
 def get_3d_position_from_pred_heatmap(pred_heatmap_colormap: List[List[Image.Image]],
                                        rev_trans: Any,
                                        projection_interface: Any,
-                                       colormap_name: str = 'viridis') -> np.ndarray:
+                                       colormap_name: str = 'jet') -> np.ndarray:
     """
     从预测的heatmap colormap中获取3D位置预测
 
@@ -1255,7 +1255,7 @@ def get_3d_position_from_pred_heatmap(pred_heatmap_colormap: List[List[Image.Ima
                                可以是 [T][num_views] 或 [num_views][T] 格式，函数会自动检测并转换
         rev_trans: 逆变换矩阵，用于从像素坐标转换到3D坐标
         projection_interface: 投影接口对象，包含get_position_from_heatmap方法
-        colormap_name: colormap名称，默认'viridis'
+        colormap_name: colormap名称，默认'jet'
 
     Returns:
         pred_position: np.ndarray (T, 3) - 预测的3D位置 [x, y, z]
@@ -1340,7 +1340,7 @@ def visualize_predictions_with_rot_grip(
     dataset_idx: int,
     save_path: str,
     heatmap_distances: Dict[str, List[List[float]]] = None,  # {'distances': (T, num_views), 'gt_peaks': (T, num_views, 2), 'pred_peaks': (T, num_views, 2)}
-    colormap_name: str = 'viridis'
+    colormap_name: str = 'jet'
 ):
     """
     可视化多视角预测结果，包含rotation、gripper和heatmap peak信息
@@ -1649,8 +1649,8 @@ class ProjectionInterface:
                 ax = axes[t, v]
                 hm = heatmaps_normalized[t][v]
 
-                # 使用viridis colormap显示heatmap
-                im = ax.imshow(hm, cmap='viridis', interpolation='nearest')
+                # 使用jet colormap显示heatmap
+                im = ax.imshow(hm, cmap='jet', interpolation='nearest')
 
                 # 添加标题
                 if t == 0:
@@ -1951,7 +1951,7 @@ class RVTAgent:
             pred_heatmap_colormap=pred_heatmap,
             rev_trans=rev_trans,
             projection_interface=self.projection_interface,
-            colormap_name='viridis'
+            colormap_name='jet'
         )  # (num_frames, 3)
         
         pred_gripper = output['gripper_predictions']  # (T-1,)
