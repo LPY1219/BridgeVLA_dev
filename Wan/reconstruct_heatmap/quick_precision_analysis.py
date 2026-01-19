@@ -118,7 +118,7 @@ def analyze_precision_results():
 def create_optimized_function(optimal_precision):
     """Create the optimized function code"""
     function_code = f'''
-def extract_heatmap_from_colormap_optimized(rgb_image, colormap_name='viridis'):
+def extract_heatmap_from_colormap_optimized(rgb_image, colormap_name='jet'):
     """
     Extract heatmap from RGB colormap - optimized for σ=3 Gaussian distributions
     Uses {optimal_precision} reference points for best efficiency

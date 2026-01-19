@@ -191,7 +191,7 @@ python experiments/evaluate.py --test_data path/to/test --model_path checkpoints
 
 1. **内存管理**: Wan2.2模型较大，需要注意GPU内存使用
 2. **数据格式**: 确保输入RGB和heatmap的尺寸匹配
-3. **colormap选择**: 使用viridis colormap保证最佳的编码解码精度
+3. **colormap选择**: 使用jet colormap保证最佳的编码解码精度
 4. **序列长度**: 根据实际需求调整预测序列的长度
 
 ## 参考资料

@@ -128,8 +128,8 @@ def visualize_dataset_sample(dataset, sample_idx=0, save_dir=None,viewpoint_idx=
         ax = plt.subplot(2, max(sequence_length, 2), max(sequence_length, 2) + 1 + i)
         heatmap = heatmap_display[i]
 
-        # 使用viridis colormap显示热力图
-        im = plt.imshow(heatmap, cmap='viridis', vmin=0, vmax=heatmap.max())
+        # 使用jet colormap显示热力图
+        im = plt.imshow(heatmap, cmap='jet', vmin=0, vmax=heatmap.max())
         plt.title(f'Heatmap {i+1}', fontsize=10)
         plt.axis('off')
 

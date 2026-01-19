@@ -214,7 +214,7 @@ def visualize_bboxes_and_heatmap(image, bboxes_norm, heatmap_tensor, save_path,
     ax1.axis('off')
     
     # Display the heatmap and overlay a semi-transparent original image
-    heatmap_display = ax2.imshow(heatmap, cmap='viridis', alpha=0.95)
+    heatmap_display = ax2.imshow(heatmap, cmap='jet', alpha=0.95)
     ax2.imshow(resized_img, alpha=0.05)
     ax2.set_title('Heatmap Overlay')
     ax2.axis('off')

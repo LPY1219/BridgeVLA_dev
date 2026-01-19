@@ -77,7 +77,7 @@ def convert_to_wan_format(heatmap):
     return heatmap_5d
 
 
-def convert_heatmap_to_colormap(heatmap, colormap_name='viridis'):
+def convert_heatmap_to_colormap(heatmap, colormap_name='jet'):
     """
     Convert heatmap to RGB image using matplotlib colormap
 
@@ -98,7 +98,7 @@ def convert_heatmap_to_colormap(heatmap, colormap_name='viridis'):
     return rgb_image.astype(np.float32)
 
 
-def extract_heatmap_from_colormap(rgb_image, colormap_name='viridis'):
+def extract_heatmap_from_colormap(rgb_image, colormap_name='jet'):
     """
     Extract heatmap from RGB colormap image by finding closest colormap values (optimized)
 
@@ -317,7 +317,7 @@ def visualize_heatmaps(original_heatmap, decoded_heatmap, save_path="heatmap_com
 
     # Difference map
     diff = np.abs(original_heatmap - decoded_heatmap)
-    im3 = axes[2].imshow(diff, cmap='viridis', interpolation='nearest')
+    im3 = axes[2].imshow(diff, cmap='jet', interpolation='nearest')
     axes[2].set_title('Absolute Difference')
     axes[2].axis('off')
     plt.colorbar(im3, ax=axes[2])
@@ -346,7 +346,7 @@ def visualize_colormap_reconstruction(original_heatmap, decoded_heatmap,
 
     # Row 1: Heatmaps
     # Original heatmap
-    im1 = axes[0, 0].imshow(original_heatmap, cmap='viridis', interpolation='nearest')
+    im1 = axes[0, 0].imshow(original_heatmap, cmap='jet', interpolation='nearest')
     axes[0, 0].set_title('Original Heatmap')
     axes[0, 0].axis('off')
     plt.colorbar(im1, ax=axes[0, 0])
@@ -362,7 +362,7 @@ def visualize_colormap_reconstruction(original_heatmap, decoded_heatmap,
     axes[0, 2].axis('off')
 
     # Decoded heatmap
-    im4 = axes[0, 3].imshow(decoded_heatmap, cmap='viridis', interpolation='nearest')
+    im4 = axes[0, 3].imshow(decoded_heatmap, cmap='jet', interpolation='nearest')
     axes[0, 3].set_title('Decoded Heatmap')
     axes[0, 3].axis('off')
     plt.colorbar(im4, ax=axes[0, 3])
@@ -383,7 +383,7 @@ def visualize_colormap_reconstruction(original_heatmap, decoded_heatmap,
 
     # Combined difference visualization
     combined_diff = np.mean(colormap_diff, axis=2)
-    im7 = axes[1, 2].imshow(combined_diff, cmap='viridis', interpolation='nearest')
+    im7 = axes[1, 2].imshow(combined_diff, cmap='jet', interpolation='nearest')
     axes[1, 2].set_title('Combined Difference')
     axes[1, 2].axis('off')
     plt.colorbar(im7, ax=axes[1, 2])
@@ -434,7 +434,7 @@ def visualize_color_images(original_image, decoded_image, save_path="color_compa
 
     # Difference map
     diff = np.abs(original_image - decoded_image)
-    im3 = axes[2].imshow(diff, cmap='viridis', interpolation='nearest')
+    im3 = axes[2].imshow(diff, cmap='jet', interpolation='nearest')
     axes[2].set_title('Absolute Difference')
     axes[2].axis('off')
     plt.colorbar(im3, ax=axes[2])
@@ -595,7 +595,7 @@ def test_color_image_reconstruction(vae, device):
     return original_image, decoded_image
 
 
-def test_colormap_heatmap_reconstruction(vae, device, colormap_name='viridis'):
+def test_colormap_heatmap_reconstruction(vae, device, colormap_name='jet'):
     """
     Test heatmap reconstruction using colormap conversion approach
     """
@@ -718,7 +718,7 @@ def main():
     original_color, decoded_color = test_color_image_reconstruction(vae, device)
 
     # Test 3: Colormap-based heatmap reconstruction
-    original_hm, decoded_hm, original_cm, decoded_cm = test_colormap_heatmap_reconstruction(vae, device, 'viridis')
+    original_hm, decoded_hm, original_cm, decoded_cm = test_colormap_heatmap_reconstruction(vae, device, 'jet')
 
     print("\n" + "="*60)
     print("All tests completed successfully!")

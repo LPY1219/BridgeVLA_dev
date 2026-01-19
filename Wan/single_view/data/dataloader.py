@@ -289,13 +289,13 @@ class HeatmapDataLoader:
 
             # 第一帧heatmap
             heatmap_first = batch['heatmap_sequence'][i, 0].cpu().numpy()
-            im1 = axes[i, 1].imshow(heatmap_first, cmap='viridis')
+            im1 = axes[i, 1].imshow(heatmap_first, cmap='jet')
             axes[i, 1].set_title(f'First Heatmap {i+1}')
             axes[i, 1].axis('off')
 
             # 最后一帧heatmap
             heatmap_last = batch['heatmap_sequence'][i, -1].cpu().numpy()
-            im2 = axes[i, 2].imshow(heatmap_last, cmap='viridis')
+            im2 = axes[i, 2].imshow(heatmap_last, cmap='jet')
             axes[i, 2].set_title(f'Last Heatmap {i+1}')
             axes[i, 2].axis('off')
 
