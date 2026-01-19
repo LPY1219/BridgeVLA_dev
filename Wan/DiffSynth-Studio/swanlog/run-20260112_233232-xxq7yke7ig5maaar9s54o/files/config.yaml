@@ -1,0 +1,157 @@
+batch_size:
+  desc: ''
+  sort: 20
+  value: 1
+data_root:
+  desc: ''
+  sort: 0
+  value:
+  - /mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/cook_6
+debug:
+  desc: ''
+  sort: 10
+  value: false
+dropout:
+  desc: ''
+  sort: 14
+  value: 0.1
+gradient_accumulation_steps:
+  desc: ''
+  sort: 19
+  value: 2
+heatmap_latent_scale:
+  desc: ''
+  sort: 27
+  value: 1.0
+hidden_dim:
+  desc: ''
+  sort: 12
+  value: 512
+image_size:
+  desc: ''
+  sort: 4
+  value: 256
+latent_noise_std:
+  desc: ''
+  sort: 28
+  value: 0.1
+learning_rate:
+  desc: ''
+  sort: 16
+  value: 0.0001
+local_feature_size:
+  desc: ''
+  sort: 30
+  value: 5
+logging_steps:
+  desc: ''
+  sort: 23
+  value: 10
+max_grad_norm:
+  desc: ''
+  sort: 18
+  value: 1.0
+model_base_path:
+  desc: ''
+  sort: 26
+  value: /mnt/robot-rfm/user/lpy/huggingface/Wan2.2-TI2V-5B-fused
+num_augmentations:
+  desc: ''
+  sort: 31
+  value: 1
+num_epochs:
+  desc: ''
+  sort: 15
+  value: 100
+num_history_frames:
+  desc: ''
+  sort: 34
+  value: 1
+num_rotation_bins:
+  desc: ''
+  sort: 13
+  value: 72
+num_workers:
+  desc: ''
+  sort: 5
+  value: 0
+output_path:
+  desc: ''
+  sort: 21
+  value: /mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/mv_rot_grip_v2_view/multinode_1nodes_view_concat_cook_6_local_feat_size_5_seq_24_history_1_3zed_different_projection_true_new_projection_with_gripper_false/20260112_233159
+save_epoch_interval:
+  desc: ''
+  sort: 22
+  value: 1
+scene_bounds:
+  desc: ''
+  sort: 6
+  value:
+  - -0.1
+  - -0.5
+  - -0.1
+  - 0.9
+  - 0.5
+  - 0.9
+sequence_length:
+  desc: ''
+  sort: 3
+  value: 24
+swanlab_experiment:
+  desc: ''
+  sort: 25
+  value: multinode_1nodes_view_concat_cook_6_local_feat_size_5_seq_24_history_1_3zed_different_projection_true_new_projection_with_gripper_false
+swanlab_project:
+  desc: ''
+  sort: 24
+  value: mv_rot_grip
+trail_end:
+  desc: ''
+  sort: 2
+  value: 8
+trail_start:
+  desc: ''
+  sort: 1
+  value: 1
+transform_augmentation_rpy:
+  desc: ''
+  sort: 8
+  value:
+  - 5.0
+  - 5.0
+  - 5.0
+transform_augmentation_xyz:
+  desc: ''
+  sort: 7
+  value:
+  - 0.1
+  - 0.1
+  - 0.1
+use_accurate_peak_detection:
+  desc: ''
+  sort: 29
+  value: true
+use_different_projection:
+  desc: ''
+  sort: 33
+  value: true
+use_initial_gripper_state:
+  desc: ''
+  sort: 35
+  value: false
+use_merged_pointcloud:
+  desc: ''
+  sort: 11
+  value: false
+use_online_encoding:
+  desc: ''
+  sort: 32
+  value: true
+wan_type:
+  desc: ''
+  sort: 9
+  value: 5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP
+weight_decay:
+  desc: ''
+  sort: 17
+  value: 1.0e-05

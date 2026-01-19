@@ -1,0 +1,52 @@
+colormap_name:
+  desc: ''
+  sort: 6
+  value: jet
+gradient_accumulation_steps:
+  desc: ''
+  sort: 9
+  value: 1
+heatmap_sigma:
+  desc: ''
+  sort: 5
+  value: 1.5
+height:
+  desc: ''
+  sort: 7
+  value: 256
+learning_rate:
+  desc: ''
+  sort: 0
+  value: 0.0001
+logging_steps:
+  desc: ''
+  sort: 10
+  value: 10
+lora_rank:
+  desc: ''
+  sort: 4
+  value: 32
+num_epochs:
+  desc: ''
+  sort: 1
+  value: 100
+num_gpus:
+  desc: ''
+  sort: 12
+  value: 8
+num_machines:
+  desc: ''
+  sort: 11
+  value: 1
+sequence_length:
+  desc: ''
+  sort: 2
+  value: 24
+train_batch_size:
+  desc: ''
+  sort: 3
+  value: 1
+width:
+  desc: ''
+  sort: 8
+  value: 256

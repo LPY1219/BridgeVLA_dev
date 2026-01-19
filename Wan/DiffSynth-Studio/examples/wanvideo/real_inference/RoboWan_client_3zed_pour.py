@@ -1,0 +1,1865 @@
+"""
+RoboWan Client for Real Robot Control
+Provides both test client and real robot control loop
+"""
+
+# 禁用代理，确保可以连接本地SSH隧道
+import os
+os.environ.pop('http_proxy', None)
+os.environ.pop('https_proxy', None)
+os.environ.pop('HTTP_PROXY', None)
+os.environ.pop('HTTPS_PROXY', None)
+os.environ.pop('all_proxy', None)
+os.environ.pop('ALL_PROXY', None)
+
+# 解决ZED SDK与PyTorch/CUDA的TLS冲突
+# 设置环境变量以避免OpenMP冲突
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
+# 预加载libgomp以避免TLS初始化错误
+import ctypes
+try:
+    # 尝试预加载libgomp（OpenMP库）
+    ctypes.CDLL('libgomp.so.1', mode=ctypes.RTLD_GLOBAL)
+except:
+    pass
+
+# 先导入ZED相关的库，再导入PyTorch
+try:
+    import pyzed.sl as sl
+except:
+    pass
+
+import requests
+from PIL import Image
+import io
+import numpy as np
+from typing import List, Optional
+from pathlib import Path
+from datetime import datetime
+import rospy
+import open3d as o3d
+import sys
+import torch
+import cv2
+import matplotlib.pyplot as plt
+import atexit
+
+# 添加训练代码路径
+diffsynth_path = "/media/casia/data4/lpy/RoboWan/BridgeVLA_dev/Wan/DiffSynth-Studio"
+sys.path.insert(0, diffsynth_path)
+
+# 导入机器人接口模块
+try:
+    from robot_interface import RobotController, action_to_pose
+    ROBOT_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Robot interface not available: {e}")
+    ROBOT_AVAILABLE = False
+
+# 导入相机接口模块
+try:
+    # 使用支持三相机的Camera类
+    # 使用相对路径导入
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    data_collection_path = os.path.join(current_dir, "../../../../../data_collection")
+    data_collection_path = os.path.abspath(data_collection_path)
+    sys.path.insert(0, data_collection_path)
+    from real_camera_utils_lpy import Camera, get_cam_extrinsic
+    CAMERA_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Camera interface not available: {e}")
+    CAMERA_AVAILABLE = False
+
+# ====================== 投影模式配置 ======================
+# ⚠️ 重要：必须与服务器端的 use_different_projection 保持一致！
+# True: 使用不同投影模式（每个相机单独投影到最佳视角）
+# False: 使用默认投影模式（点云拼接后统一投影）
+USE_DIFFERENT_PROJECTION = True  # 与服务器 run_server.sh 中的配置保持一致
+
+
+def get_projection_interface_class(use_different_projection: bool):
+    """
+    根据投影模式返回对应的ProjectionInterface类和相关函数
+
+    Args:
+        use_different_projection: 是否使用不同投影模式（每个相机单独投影）
+
+    Returns:
+        tuple: (ProjectionInterface, build_extrinsic_matrix, convert_pcd_to_base, _norm_rgb)
+    """
+    if use_different_projection:
+        from diffsynth.trainers.base_multi_view_dataset_with_rot_grip_3cam_different_projection import (
+            ProjectionInterface,
+            build_extrinsic_matrix,
+            convert_pcd_to_base,
+            _norm_rgb
+        )
+        print("[ProjectionInterface] Using DIFFERENT projection mode (3cam_different_projection)")
+        print("  -> 每个相机的点云单独投影到最佳视角")
+    else:
+        from diffsynth.trainers.base_multi_view_dataset_with_rot_grip_3cam import (
+            ProjectionInterface,
+            build_extrinsic_matrix,
+            convert_pcd_to_base,
+            _norm_rgb
+        )
+        print("[ProjectionInterface] Using DEFAULT projection mode (3cam)")
+        print("  -> 点云拼接后统一投影到所有视角")
+    return ProjectionInterface, build_extrinsic_matrix, convert_pcd_to_base, _norm_rgb
+
+
+# 导入训练代码中的预处理模块（根据投影模式选择）
+try:
+    ProjectionInterface, build_extrinsic_matrix, convert_pcd_to_base, _norm_rgb = \
+        get_projection_interface_class(USE_DIFFERENT_PROJECTION)
+    PREPROCESSING_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Failed to import projection modules: {e}")
+    PREPROCESSING_AVAILABLE = False
+
+
+# ====================== 配置参数（全局） ======================
+# ⚠️ 重要：只需在此处修改一次即可！
+# 场景边界 [x_min, y_min, z_min, x_max, y_max, z_max]
+# 注意：必须与服务器端的 scene_bounds 保持完全一致！
+#
+# 默认值：[0, -0.7, -0.05, 0.8, 0.7, 0.65]
+# 含义：
+#   x: [0, 0.8] 米
+#   y: [-0.7, 0.7] 米
+#   z: [-0.05, 0.65] 米
+# SCENE_BOUNDS = [0, -0.45, -0.05, 0.8, 0.55, 0.6]
+# SCENE_BOUNDS=[0, -0.55, -0.05, 0.8, 0.45, 0.6]
+SCENE_BOUNDS=[-0.1,-0.5,-0.1,0.9,0.5,0.9]
+# 图像尺寸
+# 注意：必须与服务器端的 img_size 保持完全一致！
+IMG_SIZE = 256
+
+# 每次推理后执行的动作步数
+# 控制每次模型推理后实际执行多少步动作
+# Old: 20 (for seq_48), New: 12 (for seq_24, execute half of predicted actions)
+EXECUTION_STEP = 20
+
+# 每次预测的帧数（包括初始帧）
+# Old: 49 表示预测49帧，即初始帧 + 48帧动作 (seq_48)
+# New: 25 表示预测25帧，即初始帧 + 24帧动作 (seq_24)
+NUM_FRAMES = 25
+
+# 点云配置
+# True: 使用三个相机拼接的点云
+# False: 只使用相机1的点云（与训练时保持一致）
+USE_MERGED_POINTCLOUD = False
+
+# 历史帧配置
+# 历史帧数量配置（必须与服务器端 NUM_HISTORY_FRAMES 保持一致）
+# 允许的值：1（单帧）, 2（两帧）, 或 1+4N（5, 9, 13, ...）
+# 当设置为 1 时，使用单帧模式（禁用历史）
+# 当设置为 >1 时，使用多帧历史模式
+NUM_HISTORY_FRAMES = 1
+
+# 动作截断配置
+# 是否启用动作截断（防止过大的动作变化）
+ENABLE_ACTION_CLIPPING = True
+# 位置最大变化量（米）- 默认4cm
+MAX_POSITION_CHANGE = 0.04
+# 旋转最大变化量（度）- 默认10度
+MAX_ROTATION_CHANGE = 10.0
+
+# Pour 任务的初始关节配置（从 teleop_lpy_pour.py 获取）
+RESET_JOINTS_POUR = np.array([5.84113346e-02, -3.28556887e-01, -5.57625597e-06, -2.61241058e+00, 5.14608518e-02, 2.26069062e+00, 7.70146633e-01])
+
+class RoboWanClient:
+    """Client for communicating with RoboWan server"""
+
+    def __init__(self,
+                 server_url: str = "http://localhost:5555",
+                 img_size: int = 256,
+                 scene_bounds: List[float] = None,  # 默认使用全局 SCENE_BOUNDS
+                 sigma: float = 1.5,
+                 augmentation: bool = False,
+                 use_merged_pointcloud: bool = None,  # 默认使用全局 USE_MERGED_POINTCLOUD
+                 num_history_frames: int = None):  # 默认使用全局 NUM_HISTORY_FRAMES
+        """
+        Initialize client
+
+        Args:
+            server_url: URL of the server (e.g., "http://localhost:5555")
+            img_size: 图像尺寸
+            scene_bounds: 场景边界
+            sigma: heatmap高斯分布标准差
+            augmentation: 是否使用数据增强（推理时通常为False）
+            use_merged_pointcloud: 是否使用拼接后的点云（True）或只使用相机1的点云（False）
+            num_history_frames: 历史帧数量（1, 2, 或 1+4N）
+        """
+        self.server_url = server_url
+        self.predict_url = f"{server_url}/predict"
+        self.health_url = f"{server_url}/health"
+        self.config_url = f"{server_url}/config"
+
+        # 记录客户端的投影模式配置
+        self.use_different_projection = USE_DIFFERENT_PROJECTION
+
+        # 初始化预处理参数
+        self.img_size = (img_size, img_size)
+        self.scene_bounds = scene_bounds if scene_bounds is not None else SCENE_BOUNDS
+        self.sigma = sigma
+        self.augmentation = augmentation
+        self.mode = "test"  # 推理模式
+        self.use_merged_pointcloud = use_merged_pointcloud if use_merged_pointcloud is not None else USE_MERGED_POINTCLOUD  # 点云融合模式
+        self.num_history_frames = num_history_frames if num_history_frames is not None else NUM_HISTORY_FRAMES  # 历史帧数量
+
+        # 初始化历史帧缓冲区
+        # 存储格式: List[Tuple[List[Image.Image], List[Image.Image]]] - 每个元素为 (heatmaps, rgbs)
+        # heatmaps: List[Image.Image] - 多视角热力图 (num_views,)
+        # rgbs: List[Image.Image] - 多视角RGB图像 (num_views,)
+        self.history_buffer = []
+
+        print(f"Client initialized with num_history_frames={self.num_history_frames}")
+
+        # 初始化三个相机的外参矩阵（与训练时相同）
+        # 外参矩阵将从get_cam_extrinsic函数动态获取
+        # 这与训练时dataset从extrinsics.pkl加载的方式保持一致
+        self.extrinsic_matrix_1 = get_cam_extrinsic("3rd_1")
+        self.extrinsic_matrix_2 = get_cam_extrinsic("3rd_2")
+        self.extrinsic_matrix_3 = get_cam_extrinsic("3rd_3")
+
+        # 初始化投影接口
+        if PREPROCESSING_AVAILABLE:
+            self.projection_interface = ProjectionInterface(
+                img_size=img_size,
+                rend_three_views=True,
+                add_depth=False
+            )
+        else:
+            self.projection_interface = None
+            print("Warning: ProjectionInterface not available!")
+
+    def check_health(self) -> bool:
+        """Check if server is healthy"""
+        try:
+            response = requests.get(self.health_url, timeout=5)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"Health check failed: {e}")
+            return False
+
+    def get_server_config(self) -> dict:
+        """
+        获取服务器配置
+
+        Returns:
+            Dictionary containing server configuration:
+                - use_different_projection: bool
+                - scene_bounds: List[float]
+                - img_size: int
+                - num_frames: int
+            如果获取失败，返回 None
+        """
+        try:
+            response = requests.get(self.config_url, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"Failed to get server config: HTTP {response.status_code}")
+                return None
+        except Exception as e:
+            print(f"Failed to get server config: {e}")
+            return None
+
+    def verify_config_consistency(self) -> bool:
+        """
+        验证客户端和服务器配置的一致性
+
+        检查项：
+        1. use_different_projection 投影模式
+        2. scene_bounds 场景边界
+        3. img_size 图像尺寸
+
+        Returns:
+            bool: 配置是否一致
+        """
+        print("\n" + "="*60)
+        print("🔍 验证客户端和服务器配置一致性...")
+        print("="*60)
+
+        server_config = self.get_server_config()
+        if server_config is None:
+            print("❌ 无法获取服务器配置，跳过一致性检查")
+            print("   警告：请确保手动检查配置一致性！")
+            return True  # 返回True允许继续，但给出警告
+
+        all_consistent = True
+
+        # 1. 检查 use_different_projection
+        server_use_different_projection = server_config.get('use_different_projection', None)
+        client_use_different_projection = self.use_different_projection
+
+        print(f"\n📌 投影模式 (use_different_projection):")
+        print(f"   客户端: {client_use_different_projection}")
+        print(f"   服务器: {server_use_different_projection}")
+
+        if server_use_different_projection is not None:
+            if client_use_different_projection != server_use_different_projection:
+                print(f"   ❌ 不一致！")
+                print(f"   请修改客户端 USE_DIFFERENT_PROJECTION = {server_use_different_projection}")
+                all_consistent = False
+            else:
+                print(f"   ✓ 一致")
+        else:
+            print(f"   ⚠️  服务器未返回此配置")
+
+        # 2. 检查 scene_bounds
+        server_scene_bounds = server_config.get('scene_bounds', None)
+        client_scene_bounds = list(self.scene_bounds)
+
+        print(f"\n📌 场景边界 (scene_bounds):")
+        print(f"   客户端: {client_scene_bounds}")
+        print(f"   服务器: {server_scene_bounds}")
+
+        if server_scene_bounds is not None:
+            tolerance = 1e-6
+            bounds_match = all(
+                abs(c - s) < tolerance
+                for c, s in zip(client_scene_bounds, server_scene_bounds)
+            )
+            if not bounds_match:
+                print(f"   ❌ 不一致！")
+                print(f"   请修改客户端 SCENE_BOUNDS = {server_scene_bounds}")
+                all_consistent = False
+            else:
+                print(f"   ✓ 一致")
+        else:
+            print(f"   ⚠️  服务器未返回此配置")
+
+        # 3. 检查 img_size
+        server_img_size = server_config.get('img_size', None)
+        client_img_size = self.img_size[0]  # 假设是正方形
+
+        print(f"\n📌 图像尺寸 (img_size):")
+        print(f"   客户端: {client_img_size}")
+        print(f"   服务器: {server_img_size}")
+
+        if server_img_size is not None:
+            if client_img_size != server_img_size:
+                print(f"   ❌ 不一致！")
+                print(f"   请修改客户端 IMG_SIZE = {server_img_size}")
+                all_consistent = False
+            else:
+                print(f"   ✓ 一致")
+        else:
+            print(f"   ⚠️  服务器未返回此配置")
+
+        # 总结
+        print("\n" + "-"*60)
+        if all_consistent:
+            print("✓ 所有配置一致，可以继续运行")
+        else:
+            print("❌ 发现配置不一致！")
+            print("   请修改客户端配置后重新运行，或修改服务器配置后重启服务器")
+        print("="*60 + "\n")
+
+        return all_consistent
+
+    def predict(
+        self,
+        heatmap_images: List[Image.Image],
+        rgb_images: List[Image.Image],
+        prompt: str,
+        initial_rotation: List[float],
+        initial_gripper: int,
+        num_frames: int = 12
+    ) -> dict:
+        """
+        Send prediction request to server
+
+        Args:
+            heatmap_images: List of PIL Images for heatmap (multi-view) - 当前帧
+            rgb_images: List of PIL Images for RGB (multi-view) - 当前帧
+            prompt: Task instruction
+            initial_rotation: Initial rotation [roll, pitch, yaw] in degrees
+            initial_gripper: Initial gripper state (0 or 1)
+            num_frames: Number of frames to predict
+
+        Returns:
+            Dictionary containing:
+                - success: bool
+                - rotation: List[List[float]] - (num_frames, 3)
+                - gripper: List[int] - (num_frames,)
+                - error: str (if failed)
+        """
+        # 更新历史缓冲区：保存当前帧
+        self.history_buffer.append((heatmap_images, rgb_images))
+
+        # 保持缓冲区大小为 num_history_frames
+        if len(self.history_buffer) > self.num_history_frames:
+            self.history_buffer.pop(0)
+
+        # Prepare files
+        files = []
+
+        # 判断使用单帧模式还是多帧历史模式
+        if self.num_history_frames == 1:
+            # 单帧模式：只发送当前帧
+            print(f"  [Client] Using single-frame mode")
+
+            # Add heatmap images
+            for i, img in enumerate(heatmap_images):
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                buffer.seek(0)
+                files.append(('heatmap_images', (f'heatmap_{i}.png', buffer, 'image/png')))
+
+            # Add RGB images
+            for i, img in enumerate(rgb_images):
+                buffer = io.BytesIO()
+                img.save(buffer, format='PNG')
+                buffer.seek(0)
+                files.append(('rgb_images', (f'rgb_{i}.png', buffer, 'image/png')))
+
+        else:
+            # 多帧历史模式：发送所有历史帧
+            # 如果缓冲区未满，重复最前面的一帧来填充（与训练时数据集逻辑一致）
+            history_frames = []
+            if len(self.history_buffer) < self.num_history_frames:
+                # 缓冲区未满，重复第一帧来填充
+                num_padding = self.num_history_frames - len(self.history_buffer)
+                first_frame = self.history_buffer[0]
+                history_frames = [first_frame] * num_padding + list(self.history_buffer)
+                print(f"  [Client] Using multi-frame history mode ({len(self.history_buffer)} frames + {num_padding} padding = {self.num_history_frames} total)")
+            else:
+                # 缓冲区已满，直接使用
+                history_frames = list(self.history_buffer)
+                print(f"  [Client] Using multi-frame history mode ({len(history_frames)} frames)")
+
+            img_idx = 0
+            for hist_idx, (hist_heatmaps, hist_rgbs) in enumerate(history_frames):
+                # Add heatmap images for this history frame
+                for view_idx, img in enumerate(hist_heatmaps):
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='PNG')
+                    buffer.seek(0)
+                    files.append(('heatmap_images', (f'heatmap_h{hist_idx}_v{view_idx}.png', buffer, 'image/png')))
+                    img_idx += 1
+
+            img_idx = 0
+            for hist_idx, (hist_heatmaps, hist_rgbs) in enumerate(history_frames):
+                # Add RGB images for this history frame
+                for view_idx, img in enumerate(hist_rgbs):
+                    buffer = io.BytesIO()
+                    img.save(buffer, format='PNG')
+                    buffer.seek(0)
+                    files.append(('rgb_images', (f'rgb_h{hist_idx}_v{view_idx}.png', buffer, 'image/png')))
+                    img_idx += 1
+
+        # Prepare form data
+        rotation_str = ','.join(map(str, initial_rotation))
+        scene_bounds_str = ','.join(map(str, self.scene_bounds))
+        data = {
+            'prompt': prompt,
+            'initial_rotation': rotation_str,
+            'initial_gripper': initial_gripper,
+            'num_frames': num_frames,
+            'scene_bounds': scene_bounds_str
+        }
+
+        try:
+            # Send request (timeout=600秒=10分钟，因为推理可能需要较长时间)
+            response = requests.post(self.predict_url, files=files, data=data, timeout=600)
+
+            # Parse response
+            result = response.json()
+            return result
+
+        except Exception as e:
+            print(f"Request failed: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def update_history_buffer(
+        self,
+        heatmap_images: List[Image.Image],
+        rgb_images: List[Image.Image]
+    ):
+        """
+        更新历史帧缓冲区（不发送predict请求）
+
+        在执行动作chunk时，每执行一个动作后应调用此方法来更新缓冲区，
+        以保持历史帧的时序连续性。
+
+        Args:
+            heatmap_images: List of PIL Images for heatmap (multi-view) - 当前帧
+            rgb_images: List of PIL Images for RGB (multi-view) - 当前帧
+        """
+        # 添加当前帧到缓冲区
+        self.history_buffer.append((heatmap_images, rgb_images))
+
+        # 保持缓冲区大小为 num_history_frames
+        if len(self.history_buffer) > self.num_history_frames:
+            self.history_buffer.pop(0)
+
+        print(f"  [Client] History buffer updated: {len(self.history_buffer)}/{self.num_history_frames} frames")
+
+    def clear_history_buffer(self):
+        """
+        清空历史帧缓冲区
+
+        在新的episode开始时调用此方法重置缓冲区
+        """
+        self.history_buffer = []
+        print(f"  [Client] History buffer cleared")
+
+    def preprocess(self, pcd_list, feat_list, all_poses: np.ndarray):
+        """
+        预处理点云序列、特征序列和姿态（三相机版本，与训练代码一致）
+
+        Args:
+            pcd_list: 点云列表的列表，每个元素为 [pcd_cam1, pcd_cam2, pcd_cam3]
+            feat_list: 特征列表的列表，每个元素为 [feat_cam1, feat_cam2, feat_cam3]
+            all_poses: 姿态数组 [num_poses, 7] - (x,y,z,w,x,y,z) wxyz格式
+
+        Returns:
+            当 USE_DIFFERENT_PROJECTION=True 时:
+                pc_list: 处理后的点云列表，每个元素为 [pcd_cam1, pcd_cam2, pcd_cam3]
+                img_feat_list: 处理后的特征列表，每个元素为 [feat_cam1, feat_cam2, feat_cam3]
+            当 USE_DIFFERENT_PROJECTION=False 时:
+                pc_list: 处理后的点云列表（拼接后的单个点云）
+                img_feat_list: 处理后的特征列表（拼接后的）
+            wpt_local: 局部坐标系下的姿态 [num_poses, 3]
+            rot_xyzw: 旋转四元数 [num_poses, 4] - xyzw格式
+            rev_trans: 逆变换函数
+        """
+        import bridgevla.mvt.utils as mvt_utils
+        from bridgevla.mvt.augmentation import apply_se3_aug_con_shared
+
+        # 确保输入是列表
+        if not isinstance(pcd_list, list):
+            pcd_list = [pcd_list]
+        if not isinstance(feat_list, list):
+            feat_list = [feat_list]
+
+        num_frames = len(pcd_list)
+
+        # 处理每一帧的3个相机数据
+        merged_pcd_list = []
+        merged_feat_list = []
+
+        for frame_idx in range(num_frames):
+            # 获取这一帧的3个相机的点云和特征
+            frame_pcds = pcd_list[frame_idx]  # [pcd_cam1, pcd_cam2, pcd_cam3]
+            frame_feats = feat_list[frame_idx]  # [feat_cam1, feat_cam2, feat_cam3]
+
+            # 归一化RGB特征
+            frame_feats_norm = [_norm_rgb(feat) for feat in frame_feats]
+
+            # 对3个相机的点云分别应用外参变换
+            pcd_cam1_base = convert_pcd_to_base(extrinsic_martix=self.extrinsic_matrix_1, pcd=frame_pcds[0])
+            pcd_cam2_base = convert_pcd_to_base(extrinsic_martix=self.extrinsic_matrix_2, pcd=frame_pcds[1])
+            pcd_cam3_base = convert_pcd_to_base(extrinsic_martix=self.extrinsic_matrix_3, pcd=frame_pcds[2])
+
+            # 转换为torch张量并展平
+            pcd_cam1_flat = torch.from_numpy(np.ascontiguousarray(pcd_cam1_base)).float().view(-1, 3)
+            pcd_cam2_flat = torch.from_numpy(np.ascontiguousarray(pcd_cam2_base)).float().view(-1, 3)
+            pcd_cam3_flat = torch.from_numpy(np.ascontiguousarray(pcd_cam3_base)).float().view(-1, 3)
+
+            # 展平RGB特征
+            feat_cam1_flat = ((frame_feats_norm[0].view(-1, 3) + 1) / 2).float()
+            feat_cam2_flat = ((frame_feats_norm[1].view(-1, 3) + 1) / 2).float()
+            feat_cam3_flat = ((frame_feats_norm[2].view(-1, 3) + 1) / 2).float()
+
+            # 根据投影模式决定如何组织点云和特征
+            if self.use_different_projection:
+                # DIFFERENT PROJECTION 模式：保留3个独立的点云列表
+                # 每个相机的点云单独投影到最佳视角
+                merged_pcd_list.append([pcd_cam1_flat, pcd_cam2_flat, pcd_cam3_flat])
+                merged_feat_list.append([feat_cam1_flat, feat_cam2_flat, feat_cam3_flat])
+            else:
+                # DEFAULT PROJECTION 模式：拼接或选择单个点云
+                if self.use_merged_pointcloud:
+                    # 拼接3个相机的点云和特征
+                    merged_pcd = torch.cat([pcd_cam1_flat, pcd_cam2_flat, pcd_cam3_flat], dim=0)
+                    merged_feat = torch.cat([feat_cam1_flat, feat_cam2_flat, feat_cam3_flat], dim=0)
+                else:
+                    # 只使用相机3（3rd_3）的点云和特征
+                    merged_pcd = pcd_cam3_flat
+                    merged_feat = feat_cam3_flat
+                merged_pcd_list.append(merged_pcd)
+                merged_feat_list.append(merged_feat)
+
+        # 后续处理
+        pc_list = merged_pcd_list
+        img_feat_list = merged_feat_list
+
+        with torch.no_grad():
+            # 数据增强（推理时通常关闭）
+            if self.augmentation and self.mode == "train":
+                assert False
+            else:
+                # 没有数据增强时，直接使用原始poses
+                action_trans_con = torch.from_numpy(np.array(all_poses)).float()[:, :3]
+                # 将wxyz格式转换为xyzw格式
+                quat_wxyz = torch.from_numpy(np.array(all_poses)).float()[:, 3:]
+                action_rot_xyzw = quat_wxyz[:, [1, 2, 3, 0]]  # [w,x,y,z] -> [x,y,z,w]
+
+            # 对每个点云应用边界约束
+            processed_pc_list = []
+            processed_feat_list = []
+
+            if self.use_different_projection:
+                # DIFFERENT PROJECTION 模式：对每个帧的3个相机点云分别处理
+                for frame_pcs, frame_feats in zip(pc_list, img_feat_list):
+                    processed_frame_pcs = []
+                    processed_frame_feats = []
+                    for pc, img_feat in zip(frame_pcs, frame_feats):
+                        pc, img_feat = self.move_pc_in_bound(
+                            pc.unsqueeze(0), img_feat.unsqueeze(0), self.scene_bounds
+                        )
+                        processed_frame_pcs.append(pc[0])
+                        processed_frame_feats.append(img_feat[0])
+                    processed_pc_list.append(processed_frame_pcs)
+                    processed_feat_list.append(processed_frame_feats)
+            else:
+                # DEFAULT PROJECTION 模式：对拼接后的点云处理
+                for pc, img_feat in zip(pc_list, img_feat_list):
+                    pc, img_feat = self.move_pc_in_bound(
+                        pc.unsqueeze(0), img_feat.unsqueeze(0), self.scene_bounds
+                    )
+                    processed_pc_list.append(pc[0])
+                    processed_feat_list.append(img_feat[0])
+
+            # 将点云和wpt放在一个cube里面
+            if self.use_different_projection:
+                # DIFFERENT PROJECTION 模式：使用第一帧拼接后的点云作为参考
+                first_frame_merged = torch.cat(processed_pc_list[0], dim=0)
+                wpt_local, rev_trans = mvt_utils.place_pc_in_cube(
+                    first_frame_merged,
+                    action_trans_con,
+                    with_mean_or_bounds=False,
+                    scene_bounds=self.scene_bounds,
+                )
+            else:
+                # DEFAULT PROJECTION 模式
+                wpt_local, rev_trans = mvt_utils.place_pc_in_cube(
+                    processed_pc_list[0],
+                    action_trans_con,
+                    with_mean_or_bounds=False,
+                    scene_bounds=self.scene_bounds,
+                )
+
+            # 对每个点云应用place_pc_in_cube
+            final_pc_list = []
+
+            if self.use_different_projection:
+                # DIFFERENT PROJECTION 模式：对每个帧的3个相机点云分别处理
+                for frame_pcs in processed_pc_list:
+                    final_frame_pcs = []
+                    for pc in frame_pcs:
+                        pc_normalized = mvt_utils.place_pc_in_cube(
+                            pc,
+                            with_mean_or_bounds=False,
+                            scene_bounds=self.scene_bounds,
+                        )[0]
+                        final_frame_pcs.append(pc_normalized)
+                    final_pc_list.append(final_frame_pcs)
+            else:
+                # DEFAULT PROJECTION 模式
+                for pc in processed_pc_list:
+                    pc = mvt_utils.place_pc_in_cube(
+                        pc,
+                        with_mean_or_bounds=False,
+                        scene_bounds=self.scene_bounds,
+                    )[0]
+                    final_pc_list.append(pc)
+
+        return final_pc_list, processed_feat_list, wpt_local, action_rot_xyzw, rev_trans
+
+    def get_rgb_input(self, processed_pcd, processed_rgb):
+        """
+        从处理后的点云和RGB生成投影的RGB图像
+
+        Args:
+            processed_pcd: 处理后的点云 (torch.Tensor)
+            processed_rgb: 处理后的RGB特征 (torch.Tensor)
+
+        Returns:
+            rgb_images: PIL.Image列表，每个视角一张图像
+        """
+        # 使用投影接口生成RGB图像
+        rgb_image = self.projection_interface.project_pointcloud_to_rgb(
+            processed_pcd, processed_rgb,
+            img_aug_before=0.0,  # 推理时不做增强
+            img_aug_after=0.0
+        )  # (1, num_views, H, W, 6)
+
+        rgb_image = rgb_image[0, :, :, :, 3:]  # (num_views, H, W, 3)
+
+        # 确保是numpy数组
+        if isinstance(rgb_image, torch.Tensor):
+            rgb_image = rgb_image.cpu().numpy()
+
+        # 转换每个视角为PIL Image
+        num_views = rgb_image.shape[0]
+        rgb_images = []
+        for view_idx in range(num_views):
+            view_img = rgb_image[view_idx]  # (H, W, 3)
+
+            # 从[-1, 1]归一化到[0, 1]，然后到[0, 255]  # 这里有问题，因为此时的view image 在0，1之间，而不是-1，1
+            # view_img = np.clip((view_img + 1) / 2, 0, 1)
+            view_img = (view_img * 255).astype(np.uint8)
+
+            # 转换为PIL Image
+            pil_img = Image.fromarray(view_img)
+            rgb_images.append(pil_img)
+
+        return rgb_images
+
+    def get_heatmap_input(self, processed_pos):
+        """
+        从处理后的位置生成热力图
+
+        Args:
+            processed_pos: 处理后的位置 [num_poses, 3] (torch.Tensor)
+
+        Returns:
+            heatmap_images: PIL.Image列表，每个视角一张热力图
+        """
+        # 将位置投影到像素坐标
+        img_locations = self.projection_interface.project_pose_to_pixel(
+            processed_pos.unsqueeze(0).to(self.projection_interface.renderer_device)
+        )  # (1, num_poses, num_views, 2)
+
+        # 生成热力图
+        heatmap_sequence = self.projection_interface.generate_heatmap_from_img_locations(
+            img_locations,
+            self.img_size[0], self.img_size[1],
+            self.sigma
+        )  # (1, num_poses, num_views, H, W)
+
+        # 取第一个batch和第一个pose的热力图
+        heatmap = heatmap_sequence[0, 0, :, :, :]  # (num_views, H, W)
+
+        # 确保是numpy数组
+        if isinstance(heatmap, torch.Tensor):
+            heatmap = heatmap.cpu().numpy()
+
+        # 转换每个视角为PIL Image
+        num_views = heatmap.shape[0]
+        heatmap_images = []
+        for view_idx in range(num_views):
+            view_hm = heatmap[view_idx]  # (H, W)
+
+            # 归一化到[0, 1]
+            view_hm_min = view_hm.min()
+            view_hm_max = view_hm.max()
+            if view_hm_max > view_hm_min:
+                view_hm_norm = (view_hm - view_hm_min) / (view_hm_max - view_hm_min)
+            else:
+                view_hm_norm = view_hm
+
+            # 应用colormap（使用JET colormap与深度图类似）
+            view_hm_uint8 = (view_hm_norm * 255).astype(np.uint8)
+            view_hm_colored = cv2.applyColorMap(view_hm_uint8, cv2.COLORMAP_JET)
+            view_hm_colored = cv2.cvtColor(view_hm_colored, cv2.COLOR_BGR2RGB)
+
+            # 转换为PIL Image
+            pil_img = Image.fromarray(view_hm_colored)
+            heatmap_images.append(pil_img)
+
+        return heatmap_images
+        
+        
+    @staticmethod   
+    def move_pc_in_bound(pc, img_feat, bounds, no_op=False):
+        """
+        :param no_op: no operation
+        """
+        if no_op:
+            return pc, img_feat
+
+        x_min, y_min, z_min, x_max, y_max, z_max = bounds
+        inv_pnt = (
+            (pc[:, :, 0] < x_min)
+            | (pc[:, :, 0] > x_max)
+            | (pc[:, :, 1] < y_min)
+            | (pc[:, :, 1] > y_max)
+            | (pc[:, :, 2] < z_min)
+            | (pc[:, :, 2] > z_max)
+            | torch.isnan(pc[:, :, 0])
+            | torch.isnan(pc[:, :, 1])
+            | torch.isnan(pc[:, :, 2])
+        )
+
+        # TODO: move from a list to a better batched version
+        pc = [pc[i, ~_inv_pnt] for i, _inv_pnt in enumerate(inv_pnt)]
+        img_feat = [img_feat[i, ~_inv_pnt] for i, _inv_pnt in enumerate(inv_pnt)]
+        return pc, img_feat
+
+
+    @staticmethod    
+    def convert_pcd_to_base(
+            type="3rd",
+            pcd=[]
+        ):
+        transform = get_cam_extrinsic(type)
+        
+        h, w = pcd.shape[:2]
+        pcd = pcd.reshape(-1, 3)
+        
+        pcd = np.concatenate((pcd, np.ones((pcd.shape[0], 1))), axis=1)
+        # pcd = (np.linalg.inv(transform) @ pcd.T).T[:, :3]
+        pcd = (transform @ pcd.T).T[:, :3]
+        
+        pcd = pcd.reshape(h, w, 3)
+        return pcd 
+
+
+    @staticmethod
+    def vis_pcd(pcd, rgb):
+
+        # 将点云和颜色转换为二维的形状 (N, 3)
+        pcd_flat = pcd.reshape(-1, 3)  # (200 * 200, 3)
+        rgb_flat = rgb.reshape(-1, 3) / 255.0  # (200 * 200, 3)
+
+        # 将点云和颜色信息保存为 PLY 文件
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pcd_flat)  # 设置点云位置
+        pcd.colors = o3d.utility.Vector3dVector(rgb_flat)  # 设置对应的颜色
+        # o3d.io.write_point_cloud(save_path, pcd)
+        o3d.visualization.draw_geometries([pcd])
+
+    @staticmethod
+    def visualize_pointcloud(processed_pcd, processed_rgb=None, title="Processed Point Cloud"):
+        """
+        可视化处理后的点云 (line 635)
+
+        Args:
+            processed_pcd: torch.Tensor or np.ndarray, shape (num_points, 3)
+            processed_rgb: torch.Tensor or np.ndarray, shape (num_points, 3), 可选的RGB颜色
+            title: 可视化窗口标题
+        """
+        # 转换为numpy数组
+        if isinstance(processed_pcd, torch.Tensor):
+            pcd_np = processed_pcd.cpu().numpy()
+        else:
+            pcd_np = processed_pcd
+
+        # 创建Open3D点云对象
+        pcd_o3d = o3d.geometry.PointCloud()
+        pcd_o3d.points = o3d.utility.Vector3dVector(pcd_np)
+
+        # 如果提供了RGB颜色
+        if processed_rgb is not None:
+            if isinstance(processed_rgb, torch.Tensor):
+                rgb_np = processed_rgb.cpu().numpy()
+            else:
+                rgb_np = processed_rgb
+
+            # 确保颜色在[0, 1]范围内
+            if rgb_np.max() > 1.0:
+                rgb_np = rgb_np / 255.0
+
+            pcd_o3d.colors = o3d.utility.Vector3dVector(rgb_np)
+
+        # 可视化
+        print(f"\n{'='*60}")
+        print(f"可视化: {title}")
+        print(f"点云数量: {len(pcd_o3d.points)}")
+        if processed_rgb is not None:
+            print(f"包含RGB颜色信息")
+        print(f"{'='*60}\n")
+
+        o3d.visualization.draw_geometries(
+            [pcd_o3d],
+            window_name=title,
+            width=800,
+            height=600
+        )
+
+    @staticmethod
+    def visualize_rgb_images(rgb_images, title="Multi-view RGB Images", save_path=None):
+        """
+        可视化多视角RGB图像 (line 639)
+
+        Args:
+            rgb_images: List[PIL.Image], 多视角RGB图像列表
+            title: 显示窗口标题
+            save_path: 可选的保存路径
+        """
+        num_views = len(rgb_images)
+
+        # 创建子图显示所有视角
+        import matplotlib.pyplot as plt
+
+        # 计算子图布局 (尽量接近正方形)
+        cols = int(np.ceil(np.sqrt(num_views)))
+        rows = int(np.ceil(num_views / cols))
+
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+        fig.suptitle(title, fontsize=16)
+
+        # 展平axes以便索引
+        if num_views == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten() if rows * cols > 1 else [axes]
+
+        for i, (img, ax) in enumerate(zip(rgb_images, axes)):
+            ax.imshow(img)
+            ax.set_title(f"View {i+1}")
+            ax.axis('off')
+
+        # 隐藏多余的子图
+        for i in range(num_views, len(axes)):
+            axes[i].axis('off')
+
+        plt.tight_layout()
+
+        # 保存图像
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"RGB图像已保存到: {save_path}")
+
+        print(f"\n{'='*60}")
+        print(f"可视化: {title}")
+        print(f"视角数量: {num_views}")
+        print(f"图像尺寸: {rgb_images[0].size}")
+        print(f"{'='*60}\n")
+
+        plt.show()
+
+    @staticmethod
+    def visualize_heatmap_images(heatmap_images, title="Multi-view Heatmaps", save_path=None):
+        """
+        可视化多视角热力图 (line 642)
+
+        Args:
+            heatmap_images: List[PIL.Image], 多视角热力图列表
+            title: 显示窗口标题
+            save_path: 可选的保存路径
+        """
+        num_views = len(heatmap_images)
+
+        # 创建子图显示所有视角
+        import matplotlib.pyplot as plt
+
+        # 计算子图布局
+        cols = int(np.ceil(np.sqrt(num_views)))
+        rows = int(np.ceil(num_views / cols))
+
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+        fig.suptitle(title, fontsize=16)
+
+        # 展平axes以便索引
+        if num_views == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten() if rows * cols > 1 else [axes]
+
+        for i, (img, ax) in enumerate(zip(heatmap_images, axes)):
+            ax.imshow(img)
+            ax.set_title(f"Heatmap View {i+1}")
+            ax.axis('off')
+
+        # 隐藏多余的子图
+        for i in range(num_views, len(axes)):
+            axes[i].axis('off')
+
+        plt.tight_layout()
+
+        # 保存图像
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"热力图已保存到: {save_path}")
+
+        print(f"\n{'='*60}")
+        print(f"可视化: {title}")
+        print(f"视角数量: {num_views}")
+        print(f"图像尺寸: {heatmap_images[0].size}")
+        print(f"{'='*60}\n")
+
+        plt.show()
+
+
+def normalize_angle(angle: float) -> float:
+    """
+    将角度标准化到 [-π, π] 范围
+
+    Args:
+        angle: 输入角度（弧度）
+
+    Returns:
+        标准化后的角度（弧度）
+    """
+    # 使用 atan2(sin(angle), cos(angle)) 来标准化角度到 [-π, π]
+    return np.arctan2(np.sin(angle), np.cos(angle))
+
+
+def reset_joints_pour(robot):
+    """
+    将机械臂重置到 pour 任务的初始关节状态
+
+    Args:
+        robot: RobotController 实例
+    """
+    rospy.loginfo("[Pour Reset] 将机械臂移动到 pour 初始状态...")
+    rospy.loginfo(f"[Pour Reset] 目标关节位置: {RESET_JOINTS_POUR}")
+    try:
+        # 先停止当前的 skill
+        try:
+            robot.franka.stop_skill()
+            rospy.sleep(0.5)
+        except Exception as e:
+            rospy.logwarn(f"Could not stop previous skill: {e}")
+
+        # 将机械臂移动到目标关节位置
+        robot.franka.goto_joints(
+            RESET_JOINTS_POUR.tolist(),
+            duration=5.0,
+            ignore_virtual_walls=True
+        )
+        rospy.loginfo("[Pour Reset] 机械臂已移动到 pour 初始状态")
+
+        # 等待移动完成
+        rospy.sleep(1.0)
+
+        # 验证当前位置
+        current_joints = robot.franka.get_joints()
+        rospy.loginfo(f"[Pour Reset] 当前关节位置: {current_joints}")
+
+    except Exception as e:
+        rospy.logerr(f"reset_joints_pour 失败: {e}")
+        raise
+
+
+def clip_action(
+    target_action: np.ndarray,
+    current_position: np.ndarray,
+    current_rotation: np.ndarray,
+    max_position_change: float = 0.04,
+    max_rotation_change: float = 10.0
+) -> np.ndarray:
+    """
+    截断动作，限制位置和旋转的最大变化量
+
+    Args:
+        target_action: 目标动作 [x, y, z, roll, pitch, yaw, gripper] (rotation in radians)
+        current_position: 当前位置 [x, y, z] (meters)
+        current_rotation: 当前旋转 [roll, pitch, yaw] (radians)
+        max_position_change: 位置最大变化量（米）
+        max_rotation_change: 旋转最大变化量（度）
+
+    Returns:
+        clipped_action: 截断后的动作 [x, y, z, roll, pitch, yaw, gripper]
+    """
+    clipped_action = target_action.copy()
+
+    # 计算位置变化
+    target_position = target_action[:3]
+    position_delta = target_position - current_position
+    position_distance = np.linalg.norm(position_delta)
+
+    # 如果位置变化超过阈值，进行截断
+    if position_distance > max_position_change:
+        # 沿着原方向缩放到最大允许距离
+        scale_factor = max_position_change / position_distance
+        clipped_position = current_position + position_delta * scale_factor
+        clipped_action[:3] = clipped_position
+        rospy.logwarn(f"  ⚠️  Position clipped: {position_distance:.4f}m -> {max_position_change:.4f}m")
+
+    # 计算旋转变化（使用角度归一化避免临界点问题）
+    target_rotation = target_action[3:6]
+
+    # 对每个旋转轴分别计算归一化的角度差
+    rotation_delta_rad = np.array([
+        normalize_angle(target_rotation[i] - current_rotation[i])
+        for i in range(3)
+    ])
+    rotation_delta_deg = np.rad2deg(rotation_delta_rad)
+
+    # 对每个旋转轴分别检查和截断
+    clipped_rotation = target_rotation.copy()
+    rotation_clipped = False
+
+    for i, axis_name in enumerate(['roll', 'pitch', 'yaw']):
+        if abs(rotation_delta_deg[i]) > max_rotation_change:
+            # 截断到最大允许变化
+            sign = np.sign(rotation_delta_deg[i])
+            max_change_rad = np.deg2rad(max_rotation_change * sign)
+            clipped_rotation[i] = current_rotation[i] + max_change_rad
+            rotation_clipped = True
+            rospy.logwarn(f"  ⚠️  {axis_name.capitalize()} clipped: {rotation_delta_deg[i]:.2f}° -> {max_rotation_change * sign:.2f}°")
+
+    if rotation_clipped:
+        clipped_action[3:6] = clipped_rotation
+
+    return clipped_action
+
+
+def real_robot_control_loop(
+    server_url: str = "http://localhost:5555",
+    task_prompt: str = "put the lion on the top shelf",
+    max_steps: int = 1000000,
+    num_frames: int = 13,
+    save_dir: Optional[str] = None,
+    action_duration: float = 0.5,
+    gripper_threshold: float = 0.5,
+    scene_bounds: List[float] = None,
+    img_size: int = None,
+    enable_action_clipping: bool = None,
+    max_position_change: float = None,
+    max_rotation_change: float = None,
+    use_merged_pointcloud: bool = None,
+):
+    """
+    真机控制主循环
+
+    Args:
+        server_url: RoboWan服务器地址
+        task_prompt: 任务指令
+        max_steps: 最大控制步数
+        num_frames: 每次预测的帧数
+        save_dir: 数据保存目录（None则自动创建）
+        action_duration: 每个动作执行时长（秒）
+        gripper_threshold: 夹爪动作阈值
+        scene_bounds: 场景边界 [x_min, y_min, z_min, x_max, y_max, z_max]
+        img_size: 图像尺寸
+        enable_action_clipping: 是否启用动作截断（None则使用全局配置）
+        max_position_change: 位置最大变化量（米）（None则使用全局配置）
+        max_rotation_change: 旋转最大变化量（度）（None则使用全局配置）
+        use_merged_pointcloud: 是否使用拼接后的点云（True）或只使用相机1的点云（False）
+    """
+    # 初始化ROS节点（如果尚未初始化）
+    # 注意：使用 disable_signals=True 以匹配 FrankaArm 的初始化参数
+    if not rospy.core.is_initialized():
+        rospy.init_node('robowan_real_robot', anonymous=False, disable_signals=True)
+
+    # 使用全局配置作为默认值
+    if enable_action_clipping is None:
+        enable_action_clipping = ENABLE_ACTION_CLIPPING
+    if max_position_change is None:
+        max_position_change = MAX_POSITION_CHANGE
+    if max_rotation_change is None:
+        max_rotation_change = MAX_ROTATION_CHANGE
+    if use_merged_pointcloud is None:
+        use_merged_pointcloud = USE_MERGED_POINTCLOUD
+
+    # 检查机器人接口是否可用
+    if not ROBOT_AVAILABLE:
+        rospy.logerr("Robot interface not available! Please check imports.")
+        return
+
+    rospy.loginfo("="*60)
+    rospy.loginfo("Starting Real Robot Control Loop")
+    rospy.loginfo("="*60)
+    if enable_action_clipping:
+        rospy.loginfo(f"Action Clipping ENABLED:")
+        rospy.loginfo(f"  - Max position change: {max_position_change*100:.1f} cm")
+        rospy.loginfo(f"  - Max rotation change: {max_rotation_change:.1f}°")
+    else:
+        rospy.loginfo("Action Clipping DISABLED")
+
+    # 创建保存目录
+    if save_dir is None:
+        save_root = Path("/media/casia/data4/lpy/RoboWan/logs")
+        time_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_dir = save_root / f"run_{time_tag}"
+    else:
+        save_dir = Path(save_dir)
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    (save_dir / "actions").mkdir(exist_ok=True)
+    rospy.loginfo(f"Saving data to: {save_dir}")
+
+    # 初始化 RoboWan 客户端
+    rospy.loginfo(f"Connecting to RoboWan server at {server_url}")
+    if scene_bounds is None:
+        scene_bounds = SCENE_BOUNDS
+    if img_size is None:
+        img_size = IMG_SIZE
+    rospy.loginfo(f"Using scene bounds: {scene_bounds}")
+    rospy.loginfo(f"Using image size: {img_size}")
+    rospy.loginfo(f"Using merged pointcloud: {use_merged_pointcloud}")
+    client = RoboWanClient(server_url=server_url, scene_bounds=scene_bounds, img_size=img_size, use_merged_pointcloud=use_merged_pointcloud)
+
+    # 检查服务器健康状态
+    if not client.check_health():
+        rospy.logerr("Server is not healthy! Please start the server first.")
+        return
+    rospy.loginfo("✓ Server is healthy")
+
+    # 验证客户端和服务器配置一致性
+    if not client.verify_config_consistency():
+        rospy.logerr("❌ 客户端和服务器配置不一致！请修改配置后重新运行。")
+        rospy.logerr("   关键配置项：USE_DIFFERENT_PROJECTION, SCENE_BOUNDS, IMG_SIZE")
+        return
+    rospy.loginfo("✓ Configuration verified")
+
+    # 初始化机器人控制器
+    rospy.loginfo("Initializing robot controller...")
+    robot = RobotController(frequency=10)
+    rospy.loginfo("✓ Robot controller initialized")
+
+    # 注册退出时的清理函数，确保程序意外退出时也能清理
+    atexit.register(lambda: robot.cleanup())
+    rospy.loginfo("✓ Exit cleanup handler registered")
+
+    # Pour 任务：先重置到初始关节位置
+    rospy.loginfo("="*60)
+    rospy.loginfo("[Pour] Resetting robot to pour initial position...")
+    reset_joints_pour(robot)
+    rospy.loginfo("✓ Robot reset to pour initial position")
+    rospy.loginfo("="*60)
+
+    # 记录初始位姿
+    initial_pose = robot.get_pose()
+    rospy.loginfo(f"[Pour] 初始位置: {initial_pose.translation}")
+    rospy.loginfo(f"[Pour] 初始旋转 (rad): {initial_pose.euler_angles}")
+    rospy.loginfo(f"[Pour] 初始旋转 (deg): {np.rad2deg(initial_pose.euler_angles)}")
+
+    # 启动动态控制模式（持续跟踪发布的目标位姿）
+    rospy.loginfo("Starting dynamic control mode...")
+
+    # 先停止任何正在运行的skill
+    try:
+        robot.franka.stop_skill()
+        rospy.sleep(0.5)
+        rospy.loginfo("✓ Previous skill stopped")
+    except Exception as e:
+        rospy.logwarn(f"Could not stop previous skill: {e}")
+
+    # 获取当前位姿并启动动态控制
+    current_pose = robot.get_pose()
+    robot.franka.goto_pose(
+        current_pose,
+        duration=100000,  # 很长的时间，保持动态模式运行
+        dynamic=True,
+        buffer_time=10,
+        cartesian_impedances=[600.0, 600.0, 600.0, 50.0, 50.0, 50.0],
+    )
+    rospy.loginfo("✓ Dynamic control mode started")
+
+    # 检查相机接口是否可用
+    if not CAMERA_AVAILABLE:
+        rospy.logerr("Camera interface not available! Please check imports.")
+        return
+
+    # 初始化相机控制器（使用三个第三视角相机）
+    rospy.loginfo("Initializing three third-person cameras...")
+    camera = Camera(camera_type="all")  # 初始化三个相机
+    rospy.loginfo("✓ Three third-person cameras initialized")
+
+    # 获取初始状态
+    current_pose = robot.get_pose()
+
+    # 修复旋转定义不匹配问题：直接从四元数转换为欧拉角
+    # 确保与训练数据使用完全相同的转换方法
+    from scipy.spatial.transform import Rotation as R
+    current_quat_init = current_pose.quaternion  # [w, x, y, z]
+    quat_scipy_init = np.array([
+        current_quat_init[1],
+        current_quat_init[2],
+        current_quat_init[3],
+        current_quat_init[0]
+    ])
+    current_rotation_deg_init = R.from_quat(quat_scipy_init).as_euler("xyz", degrees=True)
+
+    # 注意：robot.gripper_state 的定义是 False=打开, True=关闭
+    # 但训练数据的定义是 0=关闭, 1=打开
+    # 需要转换：gripper_state=False(打开) -> current_gripper=1
+    #         gripper_state=True(关闭) -> current_gripper=0
+    current_gripper = 0 if robot.gripper_state else 1  # 修复：反转映射
+
+    rospy.loginfo("\n" + "="*60)
+    rospy.loginfo(f"Task: {task_prompt}")
+    rospy.loginfo(f"Max steps: {max_steps}")
+    rospy.loginfo(f"Initial rotation (degrees): {current_rotation_deg_init}")
+    rospy.loginfo(f"Initial gripper: {current_gripper}")
+    rospy.loginfo("="*60 + "\n")
+
+    # 控制循环
+    step = 0
+
+    try:
+        while step < max_steps:
+            rospy.loginfo(f"{'='*60}")
+            rospy.loginfo(f"Step {step}/{max_steps}")
+            rospy.loginfo(f"{'='*60}")
+
+            # ========== 1. 获取观测 ==========
+            rospy.loginfo("Capturing observations from three cameras...")
+            try:
+                obs = camera.capture()
+
+                # 获取三个相机的RGB图像和点云
+                rgb_3rd_1 = obs['3rd_1']['rgb']
+                pcd_3rd_1 = obs['3rd_1']['pcd']
+                rgb_3rd_2 = obs['3rd_2']['rgb']
+                pcd_3rd_2 = obs['3rd_2']['pcd']
+                rgb_3rd_3 = obs['3rd_3']['rgb']
+                pcd_3rd_3 = obs['3rd_3']['pcd']
+
+                # 将BGR格式转换为RGB格式
+                rgb_3rd_1 = cv2.cvtColor(rgb_3rd_1, cv2.COLOR_BGR2RGB)
+                rgb_3rd_2 = cv2.cvtColor(rgb_3rd_2, cv2.COLOR_BGR2RGB)
+                rgb_3rd_3 = cv2.cvtColor(rgb_3rd_3, cv2.COLOR_BGR2RGB)
+
+                # 保存观测
+                # save_observations(obs, save_dir, step)
+                rospy.loginfo("✓ Observations captured from three cameras")
+
+                # 获取当前机器人状态
+                current_pose_obj = robot.get_pose()
+
+                # 修复旋转定义不匹配问题：
+                # 直接从四元数转换为欧拉角，确保与训练数据使用完全相同的转换方法
+                # 训练数据使用: r.as_euler("xyz", degrees=True)  (heatmap_utils.py:592)
+                from scipy.spatial.transform import Rotation as R
+                current_quat = current_pose_obj.quaternion  # [w, x, y, z]
+                # 转换为 scipy 格式 [x, y, z, w]
+                quat_scipy = np.array([
+                    current_quat[1],
+                    current_quat[2],
+                    current_quat[3],
+                    current_quat[0]
+                ])
+                # 使用与训练数据完全相同的转换方法
+                current_rotation_deg = R.from_quat(quat_scipy).as_euler("xyz", degrees=True).tolist()
+
+                # DEBUG: 对比 euler_angles property 和四元数转换的结果
+                current_rotation_rad_property = current_pose_obj.euler_angles  # [roll, pitch, yaw] in radians
+                current_rotation_deg_property = np.rad2deg(current_rotation_rad_property).tolist()
+                rospy.loginfo(f"[DEBUG Rotation] euler_angles property: {current_rotation_deg_property}")
+                rospy.loginfo(f"[DEBUG Rotation] from quaternion (xyz): {current_rotation_deg}")
+
+                # 注意：robot.gripper_state 的定义是 False=打开, True=关闭
+                # 但训练数据的定义是 0=关闭, 1=打开
+                # 需要转换：gripper_state=False(打开) -> current_gripper=1
+                #         gripper_state=True(关闭) -> current_gripper=0
+                current_gripper = 0 if robot.gripper_state else 1  # 修复：反转映射
+
+                # DEBUG: 打印夹爪状态
+                rospy.loginfo(f"[DEBUG Client] robot.gripper_state = {robot.gripper_state} ({'closed' if robot.gripper_state else 'open'}), current_gripper = {current_gripper} ({'closed' if current_gripper==0 else 'open'})")
+
+                # 将当前位姿转换为数组格式 [x, y, z, w, x, y, z] (wxyz格式)
+                # 假设 current_pose_obj 有 translation 和 quaternion 属性
+                current_position = current_pose_obj.translation  # [x, y, z]
+                current_quat = current_pose_obj.quaternion  # 假设是 [w, x, y, z] 格式
+                current_pose = np.concatenate([current_position, current_quat])  # [x, y, z, w, x, y, z]
+                current_pose = current_pose.reshape(1, 7)  # [1, 7]
+
+                rospy.loginfo(f"Current position: {current_position}")
+                rospy.loginfo(f"Current rotation: {current_rotation_deg}")
+                rospy.loginfo(f"Current gripper: {current_gripper}")
+
+            except Exception as e:
+                rospy.logerr(f"Error capturing observations: {e}")
+                break
+
+            # ========== 2. 准备输入数据 ==========
+
+            # 预处理数据（三相机版本）
+            # 将三个相机的数据组织成列表格式：[[pcd1, pcd2, pcd3]]
+            processed_pcd_list, processed_rgb_list, processed_pos, processed_rot_xyzw, rev_trans = client.preprocess(
+                [[pcd_3rd_1, pcd_3rd_2, pcd_3rd_3]],
+                [[rgb_3rd_1, rgb_3rd_2, rgb_3rd_3]],
+                current_pose
+            )
+
+            # 取第一个元素（因为只有一个观测）
+            processed_pcd = processed_pcd_list[0]  # 拼接后的点云
+            processed_rgb = processed_rgb_list[0]  # 拼接后的RGB
+            # 可视化处理后的点云 (可选)
+            # RoboWanClient.visualize_pointcloud(processed_pcd, processed_rgb, title="Processed Point Cloud (Merged 3 Cameras)")
+
+            # 准备RGB图像（从拼接后的点云投影）
+            rgb_images = client.get_rgb_input(processed_pcd, processed_rgb)
+            # 可视化多视角RGB图像 (可选)
+            # RoboWanClient.visualize_rgb_images(rgb_images, title="Multi-view RGB Images")
+
+            # 准备热力图
+            heatmap_images = client.get_heatmap_input(processed_pos)
+            # 可视化热力图 (可选)
+            # RoboWanClient.visualize_heatmap_images(heatmap_images, title="Multi-view Heatmaps")
+
+
+            # ========== 3. 发送请求到服务器 ==========
+            rospy.loginfo("Requesting action from server...")
+            try:
+                result = client.predict(
+                    heatmap_images=heatmap_images,
+                    rgb_images=rgb_images,
+                    prompt=task_prompt,
+                    initial_rotation=current_rotation_deg,
+                    initial_gripper=current_gripper,
+                    num_frames=num_frames
+                )
+
+                if not result['success']:
+                    rospy.logerr(f"Server prediction failed: {result.get('error', 'Unknown error')}")
+                    break
+
+                rospy.loginfo("✓ Received action from server")
+
+            except Exception as e:
+                rospy.logerr(f"Error during server request: {e}")
+                break
+
+            # ========== 4. 解析动作 ==========
+            # 提取位置、旋转和夹爪动作
+            position_actions = result.get('position', [])
+            rotation_actions = result.get('rotation', [])
+            gripper_actions = result.get('gripper', [])
+
+            # 调试信息
+            rospy.loginfo(f"Received actions:")
+            rospy.loginfo(f"  Position actions: {len(position_actions)} frames")
+            rospy.loginfo(f"  Rotation actions: {len(rotation_actions)} frames")
+            rospy.loginfo(f"  Gripper actions: {len(gripper_actions)} frames")
+
+            # ========== DEBUG: 检查第一个预测位置和当前位置的差异 ==========
+            # 理论上,如果空间位置->热力图->空间位置的变换是正确的,
+            # 那么第一个预测位置应该和当前位置接近
+            if len(position_actions) > 0:
+                predicted_first_pos = np.array(position_actions[0])  # [x, y, z]
+                position_diff = predicted_first_pos - current_position
+                position_distance = np.linalg.norm(position_diff)
+
+                rospy.loginfo(f"\n{'='*60}")
+                rospy.loginfo(f"[DEBUG] 位置变换一致性检查:")
+                rospy.loginfo(f"  当前位置 (current_position):     {current_position}")
+                rospy.loginfo(f"  预测第一帧位置 (predicted[0]):    {predicted_first_pos}")
+                rospy.loginfo(f"  位置差异向量:                      {position_diff}")
+                rospy.loginfo(f"  位置差异距离 (L2范数):             {position_distance:.6f} 米")
+
+                # 判断是否接近 (阈值可以调整,例如1cm = 0.01m)
+                threshold = 0.01  # 1cm
+                if position_distance < threshold:
+                    rospy.loginfo(f"  ✓ 变换一致! (距离 < {threshold}m)")
+                else:
+                    rospy.logwarn(f"  ✗ 变换可能有误! (距离 >= {threshold}m)")
+                    rospy.logwarn(f"    这可能意味着空间位置<->热力图的变换存在问题")
+                rospy.loginfo(f"{'='*60}\n")
+
+            # 确保所有动作数组长度一致
+            num_actions = min(len(position_actions), len(rotation_actions), len(gripper_actions))
+            if num_actions == 0:
+                rospy.logerr("No actions received from server!")
+                break
+
+            rospy.loginfo(f"Using {num_actions} actions")
+
+            # 构建动作矩阵
+            action_matrix = np.zeros((num_actions, 7))
+            action_matrix[:, :3] = np.array(position_actions[:num_actions])  # position
+            action_matrix[:, 3:6] = np.deg2rad(rotation_actions[:num_actions])  # rotation (转为弧度)
+            action_matrix[:, 6] = np.array(gripper_actions[:num_actions])  # gripper
+
+            # 保存动作
+            # np.save(str(save_dir / "actions" / f"step_{step:05d}.npy"), action_matrix)
+            # rospy.loginfo(f"Action matrix shape: {action_matrix.shape}")
+
+            # ========== 5. 执行动作 ==========
+            # 通常只执行第一个或前几个动作
+            num_actions_to_execute = min(EXECUTION_STEP, len(action_matrix))
+
+            for action_idx in range(num_actions_to_execute):
+                single_action = action_matrix[action_idx]
+                rospy.loginfo(f"Executing action {action_idx}/{num_actions_to_execute}")
+                rospy.loginfo(f"  Original action: {single_action}")
+
+                try:
+                    # 获取当前位姿用于对比
+                    current_pose_obj = robot.get_pose()
+                    current_pos = current_pose_obj.translation
+                    current_rot = current_pose_obj.euler_angles
+
+                    rospy.loginfo(f"  Current position: {current_pos}")
+                    rospy.loginfo(f"  Current rotation: {current_rot}")
+                    rospy.loginfo(f"  Target position: {single_action[:3]}")
+                    rospy.loginfo(f"  Target rotation: {single_action[3:6]}")
+
+                    # 计算位置差异
+                    pos_diff = np.linalg.norm(single_action[:3] - current_pos)
+                    # 计算旋转差异（使用角度归一化避免临界点问题）
+                    rot_diff_rad = np.array([
+                        normalize_angle(single_action[3+i] - current_rot[i])
+                        for i in range(3)
+                    ])
+                    rot_diff_deg = np.rad2deg(rot_diff_rad)
+                    rospy.loginfo(f"  Position difference: {pos_diff:.4f} m ({pos_diff*100:.2f} cm)")
+                    rospy.loginfo(f"  Rotation difference: [{rot_diff_deg[0]:.2f}°, {rot_diff_deg[1]:.2f}°, {rot_diff_deg[2]:.2f}°]")
+
+                    # 应用动作截断（如果启用）
+                    if enable_action_clipping:
+                        single_action = clip_action(
+                            target_action=single_action,
+                            current_position=current_pos,
+                            current_rotation=current_rot,
+                            max_position_change=max_position_change,
+                            max_rotation_change=max_rotation_change
+                        )
+                        rospy.loginfo(f"  Clipped action: {single_action}")
+
+                    # 计算目标位姿（使用绝对动作）
+                    target_pose = action_to_pose(
+                        single_action[:6],
+                        current_pose_obj,
+                        is_relative=False
+                    )
+
+                    # 执行位姿
+                    robot.execute_pose(target_pose, duration_s=action_duration)
+                    rospy.loginfo(f"✓ Action {action_idx} executed")
+
+                    # 更新当前位姿
+                    current_pose = robot.get_pose()
+
+                    # 控制夹爪
+                    gripper_action = float(single_action[6])
+                    rospy.loginfo(f"  Gripper action: {gripper_action} (current state: {1 if robot.gripper_state else 0})")
+                    robot.control_gripper(gripper_action, threshold=gripper_threshold)
+                    rospy.loginfo(f"  Gripper state after control: {1 if robot.gripper_state else 0}")
+
+                    # ========== 更新历史缓冲区 ==========
+                    # 在执行每个动作后采集新观测，更新历史缓冲区
+                    # 这样可以保持历史帧的时序连续性，与训练时的数据格式一致
+                    if action_idx < num_actions_to_execute - 1:  # 最后一个动作后不需要更新（下一个step会重新获取）
+                        try:
+                            rospy.loginfo(f"  Updating history buffer after action {action_idx}...")
+
+                            # 采集新观测
+                            obs_update = camera.capture()
+                            rgb_3rd_1_update = cv2.cvtColor(obs_update['3rd_1']['rgb'], cv2.COLOR_BGR2RGB)
+                            rgb_3rd_2_update = cv2.cvtColor(obs_update['3rd_2']['rgb'], cv2.COLOR_BGR2RGB)
+                            rgb_3rd_3_update = cv2.cvtColor(obs_update['3rd_3']['rgb'], cv2.COLOR_BGR2RGB)
+                            pcd_3rd_1_update = obs_update['3rd_1']['pcd']
+                            pcd_3rd_2_update = obs_update['3rd_2']['pcd']
+                            pcd_3rd_3_update = obs_update['3rd_3']['pcd']
+
+                            # 获取当前机器人位姿
+                            current_pose_update = robot.get_pose()
+                            current_position_update = current_pose_update.translation
+                            current_quat_update = current_pose_update.quaternion
+                            current_pose_array_update = np.concatenate([current_position_update, current_quat_update]).reshape(1, 7)
+
+                            # 预处理数据
+                            processed_pcd_list_update, processed_rgb_list_update, processed_pos_update, _, _ = client.preprocess(
+                                [[pcd_3rd_1_update, pcd_3rd_2_update, pcd_3rd_3_update]],
+                                [[rgb_3rd_1_update, rgb_3rd_2_update, rgb_3rd_3_update]],
+                                current_pose_array_update
+                            )
+
+                            # 生成新的输入图像
+                            processed_pcd_update = processed_pcd_list_update[0]
+                            processed_rgb_update = processed_rgb_list_update[0]
+                            rgb_images_update = client.get_rgb_input(processed_pcd_update, processed_rgb_update)
+                            heatmap_images_update = client.get_heatmap_input(processed_pos_update)
+
+                            # 更新历史缓冲区（不发送predict请求）
+                            client.update_history_buffer(heatmap_images_update, rgb_images_update)
+
+                        except Exception as e:
+                            rospy.logwarn(f"  Failed to update history buffer: {e}")
+
+                except Exception as e:
+                    rospy.logerr(f"Error executing action {action_idx}: {e}")
+                    continue
+
+            # 步数递增
+            step += 1
+            # a=input("CONTINUE?")
+            rospy.loginfo(f"Step {step} completed\n")
+
+    except KeyboardInterrupt:
+        rospy.loginfo("\nControl loop interrupted by user")
+    except Exception as e:
+        rospy.logerr(f"Fatal error in control loop: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # 清理机器人资源，停止所有skill
+        rospy.loginfo("\n" + "="*60)
+        rospy.loginfo("Cleaning up robot resources...")
+        try:
+            robot.cleanup()
+        except Exception as e:
+            rospy.logwarn(f"Error during cleanup: {e}")
+
+        rospy.loginfo("Control Loop Finished")
+        rospy.loginfo(f"Total steps executed: {step}")
+        rospy.loginfo(f"Data saved to: {save_dir}")
+        rospy.loginfo("="*60)
+
+
+def main():
+    """
+    RoboWan真机控制主程序入口
+
+    使用方法：
+        python RoboWan_client.py                    # 使用默认参数
+        python RoboWan_client.py --help             # 显示帮助
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="RoboWan真机控制客户端 - 连接服务器并控制机器人执行任务",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+  示例用法:
+  # 基本用法（使用默认参数，默认启用动作截断）
+  python RoboWan_client.py
+
+  # 指定服务器地址和任务
+  python RoboWan_client.py --server http://10.10.1.21:5555 --task "put the lion on the top shelf"
+
+  # 指定最大步数、预测帧数和保存目录
+  python RoboWan_client.py --max-steps 50 --num-frames 10 --save-dir /path/to/save
+
+  # 自定义场景边界和图像尺寸
+  python RoboWan_client.py --scene-bounds "0,-0.55,-0.05,0.8,0.45,0.6" --img-size 384
+
+  # 自定义动作截断参数（位置最大变化5cm，旋转最大变化15度 ）
+  python RoboWan_client.py --max-position-change 0.05 --max-rotation-change 15.0
+
+  # 禁用动作截断
+  python RoboWan_client.py --disable-action-clipping
+        """
+    )
+
+    # 服务器配置
+    parser.add_argument(
+        '--server',
+        type=str,
+        default="http://localhost:5555",
+        help='RoboWan服务器地址 (默认: http://localhost:5555，通过SSH隧道连接)'
+    )
+
+    # 任务配置
+    parser.add_argument(
+        '--task',
+        type=str,
+        default="put the lion on the top shelf",
+        help='任务指令'
+    )
+
+    parser.add_argument(
+        '--max-steps',
+        type=int,
+        default=100000,
+        help='最大控制步数 (默认: 100)'
+    )
+
+    parser.add_argument(
+        '--num-frames',
+        type=int,
+        default=NUM_FRAMES,
+        help=f'每次预测的帧数 (默认: {NUM_FRAMES}), 包括了初始帧'
+    )
+
+    parser.add_argument(
+        '--scene-bounds',
+        type=str,
+        default=None,
+        help='场景边界，格式为逗号分隔的6个数字: x_min,y_min,z_min,x_max,y_max,z_max (默认: 使用SCENE_BOUNDS全局配置)'
+    )
+
+    parser.add_argument(
+        '--img-size',
+        type=int,
+        default=None,
+        help='图像尺寸 (默认: 使用IMG_SIZE全局配置)'
+    )
+
+    # 动作截断参数
+    parser.add_argument(
+        '--enable-action-clipping',
+        action='store_true',
+        default=None,
+        help='启用动作截断（限制位置和旋转的最大变化）'
+    )
+
+    parser.add_argument(
+        '--disable-action-clipping',
+        action='store_true',
+        default=False,
+        help='禁用动作截断'
+    )
+
+    parser.add_argument(
+        '--max-position-change',
+        type=float,
+        default=None,
+        help='位置最大变化量（米） (默认: 0.04m = 4cm)'
+    )
+
+    parser.add_argument(
+        '--max-rotation-change',
+        type=float,
+        default=None,
+        help='旋转最大变化量（度） (默认: 10.0°)'
+    )
+
+    # 点云配置参数
+    parser.add_argument(
+        '--use-merged-pointcloud',
+        action='store_true',
+        default=None,
+        help='使用三个相机拼接的点云（默认: 使用USE_MERGED_POINTCLOUD全局配置）'
+    )
+
+    parser.add_argument(
+        '--no-merged-pointcloud',
+        action='store_true',
+        default=False,
+        help='只使用相机1的点云（覆盖USE_MERGED_POINTCLOUD全局配置）'
+    )
+
+    # 控制参数
+    parser.add_argument(
+        '--action-duration',
+        type=float,
+        default=0.5,
+        help='每个动作执行时长（秒） (默认: 0.5)'
+    )
+
+    parser.add_argument(
+        '--gripper-threshold',
+        type=float,
+        default=0.5,
+        help='夹爪动作阈值 (默认: 0.5)' # 感觉这个没有什么用
+    )
+
+    # 数据保存
+    parser.add_argument(
+        '--save-dir',
+        type=str,
+        default="/media/casia/data4/lpy/RoboWan/logs",
+        help='数据保存目录 (默认: 自动创建时间戳目录)'
+    )
+
+    args = parser.parse_args()
+
+    # 解析scene_bounds参数
+    scene_bounds = None
+    if args.scene_bounds is not None:
+        try:
+            scene_bounds = [float(x.strip()) for x in args.scene_bounds.split(',')]
+            if len(scene_bounds) != 6:
+                print("错误: scene_bounds必须包含6个数字 (x_min,y_min,z_min,x_max,y_max,z_max)")
+                return
+        except ValueError:
+            print("错误: scene_bounds格式错误，必须是逗号分隔的6个数字")
+            return
+
+    # 处理动作截断参数
+    enable_action_clipping = None
+    if args.disable_action_clipping:
+        enable_action_clipping = False
+    elif args.enable_action_clipping:
+        enable_action_clipping = True
+    # 如果两个都没指定，则为None，使用全局配置
+
+    # 处理点云配置参数
+    use_merged_pointcloud = None
+    if args.no_merged_pointcloud:
+        use_merged_pointcloud = False
+    elif args.use_merged_pointcloud:
+        use_merged_pointcloud = True
+    # 如果两个都没指定，则为None，使用全局配置
+
+    # 检查机器人接口是否可用
+    if not ROBOT_AVAILABLE:
+        print("="*60)
+        print("错误：机器人接口不可用！")
+        print("请确保已正确安装以下依赖：")
+        print("  - frankapy")
+        print("  - diffusion_policy")
+        print("  - autolab_core")
+        print("="*60)
+        return
+
+    # 初始化ROS - RobotController 内部会自动初始化ROS节点
+    # 如果需要手动初始化，取消下面的注释
+    # try:
+    #     if not rospy.core.is_initialized():
+    #         rospy.init_node('robowan_client', anonymous=True)
+    # except Exception as e:
+    #     print(f"错误: ROS初始化失败 - {e}")
+    #     print("请确保已启动 roscore")
+    #     return
+
+    # 确定最终使用的配置
+    final_enable_clipping = enable_action_clipping if enable_action_clipping is not None else ENABLE_ACTION_CLIPPING
+    final_max_pos_change = args.max_position_change if args.max_position_change is not None else MAX_POSITION_CHANGE
+    final_max_rot_change = args.max_rotation_change if args.max_rotation_change is not None else MAX_ROTATION_CHANGE
+    final_use_merged_pointcloud = use_merged_pointcloud if use_merged_pointcloud is not None else USE_MERGED_POINTCLOUD
+
+    # 显示配置信息
+    print("\n" + "="*60)
+    print("RoboWan真机控制客户端")
+    print("="*60)
+    print(f"服务器地址:        {args.server}")
+    print(f"任务指令:          {args.task}")
+    print(f"最大步数:          {args.max_steps}")
+    print(f"预测帧数:          {args.num_frames}    (initial frame included)")
+    print(f"场景边界:          {scene_bounds if scene_bounds else SCENE_BOUNDS} {'(自定义)' if scene_bounds else '(默认)'}")
+    print(f"图像尺寸:          {args.img_size if args.img_size else IMG_SIZE} {'(自定义)' if args.img_size else '(默认)'}")
+    print(f"点云融合模式:      {'使用三相机拼接' if final_use_merged_pointcloud else '只使用相机1'} {'(自定义)' if use_merged_pointcloud is not None else '(默认)'}")
+    print(f"动作执行时长:      {args.action_duration}秒")
+    print(f"夹爪阈值:          {args.gripper_threshold}")
+    print("")
+    print("动作截断配置:")
+    if final_enable_clipping:
+        print(f"  状态:            启用 ✓")
+        print(f"  最大位置变化:    {final_max_pos_change*100:.1f} cm")
+        print(f"  最大旋转变化:    {final_max_rot_change:.1f}°")
+    else:
+        print(f"  状态:            禁用 ✗")
+    print("")
+    print(f"保存目录:          {args.save_dir if args.save_dir else '自动创建'}")
+    print("="*60)
+
+    # 确认启动
+    try:
+        user_input = input("\n是否开始控制机器人? (yes/no): ").strip().lower()
+        if user_input not in ['yes', 'y']:
+            print("已取消")
+            return
+    except KeyboardInterrupt:
+        print("\n已取消")
+        return
+
+    print("\n开始真机控制...")
+    print("按 Ctrl+C 可随时停止\n")
+
+    # 启动真机控制循环
+    try:
+        real_robot_control_loop(
+            server_url=args.server,
+            task_prompt=args.task,
+            max_steps=args.max_steps,
+            num_frames=args.num_frames,
+            save_dir=args.save_dir,
+            action_duration=args.action_duration,
+            gripper_threshold=args.gripper_threshold,
+            scene_bounds=scene_bounds,
+            img_size=args.img_size,
+            enable_action_clipping=enable_action_clipping,
+            max_position_change=args.max_position_change,
+            max_rotation_change=args.max_rotation_change,
+            use_merged_pointcloud=use_merged_pointcloud,
+        )
+    except KeyboardInterrupt:
+        rospy.loginfo("\n用户中断控制")
+    except Exception as e:
+        rospy.logerr(f"\n控制过程中发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()

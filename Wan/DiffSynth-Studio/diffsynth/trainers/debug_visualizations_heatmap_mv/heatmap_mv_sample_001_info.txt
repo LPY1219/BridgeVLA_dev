@@ -1,0 +1,15 @@
+Sample 1 Information
+============================================================
+
+Prompt: put the lion on the top shelf
+
+Data Structure:
+  Number of frames: 6
+  Number of views: 3
+  Video structure: List[List[PIL.Image]] - 6 x 3
+  Input image (heatmap): List[PIL.Image] - 3 views
+  Input image (RGB): List[PIL.Image] - 3 views
+  Input video RGB: List[List[PIL.Image]] - 6 x 3
+
+Dataset Type: Multi-view Heatmap Dataset
+Wan Type: 5B_TI2V_RGB_HEATMAP
