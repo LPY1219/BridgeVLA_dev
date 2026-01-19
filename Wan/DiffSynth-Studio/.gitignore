@@ -1,0 +1,9 @@
+models/Wan-AI/
+debug_log/
+heatmap_inference_results/
+projection_test_results/
+examples/wanvideo/model_inference/mvtrack_inference_results/
+examples/wanvideo/model_inference/temp_ckpt/
+*.safetensors
+__pycache__
+__pycache__/
