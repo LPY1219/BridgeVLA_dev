@@ -25,6 +25,8 @@ video = pipe(
 )
 save_video(video, "video1.mp4", fps=15, quality=5)
 
+
+
 # Image-to-video
 dataset_snapshot_download(
     dataset_id="DiffSynth-Studio/examples_in_diffsynth",
