@@ -39,6 +39,12 @@ MACHINE5_DISPLAY=":1.0"
 MACHINE5_CONDA_PATH="/DATA/disk1/yaoliang/miniconda3/etc/profile.d/conda.sh"
 MACHINE5_CONDA_ENV="BridgeVLA_DM"
 
+# 机器6的CoppeliaSim配置
+MACHINE6_COPPELIASIM_ROOT="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/finetune/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04"
+MACHINE6_DISPLAY=":1.0"
+MACHINE6_CONDA_PATH="/root/miniconda3/etc/profile.d/conda.sh"
+MACHINE6_CONDA_ENV="BridgeVLA_DM"
+
 # 通过COPPELIASIM_ROOT检测机器并设置环境
 if [ -d "${MACHINE1_COPPELIASIM_ROOT}" ]; then
     echo "检测到机器1（基于COPPELIASIM_ROOT），使用配置1"
@@ -93,6 +99,16 @@ elif [ -d "${MACHINE5_COPPELIASIM_ROOT}" ]; then
     # 修复CUDA库冲突：优先使用PyTorch自带的NVIDIA库
     export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib/python3.9/site-packages/nvidia/nvjitlink/lib:${CONDA_PREFIX}/lib:${COPPELIASIM_ROOT}:${LD_LIBRARY_PATH}"
     echo "已设置机器5的CoppeliaSim环境变量和conda环境"
+elif [ -d "${MACHINE6_COPPELIASIM_ROOT}" ]; then
+    echo "检测到机器6（基于COPPELIASIM_ROOT），使用配置6"
+    CURRENT_MACHINE="machine6"
+    export COPPELIASIM_ROOT="${MACHINE6_COPPELIASIM_ROOT}"
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$COPPELIASIM_ROOT
+    export QT_QPA_PLATFORM_PLUGIN_PATH=$COPPELIASIM_ROOT
+    export DISPLAY="${MACHINE6_DISPLAY}"
+    source "${MACHINE6_CONDA_PATH}"
+    conda activate "${MACHINE6_CONDA_ENV}"
+    echo "已设置机器6的CoppeliaSim环境变量和conda环境"
 else
     echo "错误：未找到COPPELIASIM_ROOT路径"
     echo "请检查以下路径是否存在："
@@ -101,6 +117,7 @@ else
     echo "  机器3: ${MACHINE3_COPPELIASIM_ROOT}"
     echo "  机器4: ${MACHINE4_COPPELIASIM_ROOT}"
     echo "  机器5: ${MACHINE5_COPPELIASIM_ROOT}"
+    echo "  机器6: ${MACHINE6_COPPELIASIM_ROOT}"
     exit 1
 fi
 
@@ -123,6 +140,9 @@ MACHINE4_PROJECT_ROOT="/DATA/disk1/lpy_a100_4/BridgeVLA_dev/Wan/DiffSynth-Studio
 # 机器5的项目路径配置
 MACHINE5_PROJECT_ROOT="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/Wan/DiffSynth-Studio"
 
+# 机器6的项目路径配置
+MACHINE6_PROJECT_ROOT="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/Wan/DiffSynth-Studio"
+
 # 根据机器类型设置项目路径
 if [ "${CURRENT_MACHINE}" = "machine1" ]; then
     PROJECT_ROOT="${MACHINE1_PROJECT_ROOT}"
@@ -134,6 +154,8 @@ elif [ "${CURRENT_MACHINE}" = "machine4" ]; then
     PROJECT_ROOT="${MACHINE4_PROJECT_ROOT}"
 elif [ "${CURRENT_MACHINE}" = "machine5" ]; then
     PROJECT_ROOT="${MACHINE5_PROJECT_ROOT}"
+elif [ "${CURRENT_MACHINE}" = "machine6" ]; then
+    PROJECT_ROOT="${MACHINE6_PROJECT_ROOT}"
 fi
 
 # 检查项目根目录是否存在
@@ -161,10 +183,10 @@ echo "当前工作目录: $(pwd)"
 # NUM_GPUS=8
 
 # NUM_GPUS=4
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-NUM_GPUS=8
-# export CUDA_VISIBLE_DEVICES=0
-# NUM_GPUS=1
+# export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+# NUM_GPUS=8
+export CUDA_VISIBLE_DEVICES=0
+NUM_GPUS=1
 echo "使用GPU: ${CUDA_VISIBLE_DEVICES}"
 echo "GPU数量: ${NUM_GPUS}"
 
@@ -198,6 +220,11 @@ MACHINE5_DATA_ROOT="/DATA/disk1/lpy_a100_1/Franka_data_3zed_5/"
 MACHINE5_OUTPUT_BASE="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/train"
 MACHINE5_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_1/huggingface/Wan2.2-TI2V-5B-fused"
 
+# 机器6的路径配置
+MACHINE6_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/pour_filter"
+MACHINE6_OUTPUT_BASE="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train"
+MACHINE6_MODEL_BASE_PATH="/mnt/robot-rfm/user/lpy/huggingface/Wan2.2-TI2V-5B-fused"
+
 # 根据机器类型设置路径
 if [ "${CURRENT_MACHINE}" = "machine1" ]; then
     DATA_ROOT="${MACHINE1_DATA_ROOT}"
@@ -219,6 +246,10 @@ elif [ "${CURRENT_MACHINE}" = "machine5" ]; then
     DATA_ROOT="${MACHINE5_DATA_ROOT}"
     OUTPUT_BASE="${MACHINE5_OUTPUT_BASE}"
     MODEL_BASE_PATH="${MACHINE5_MODEL_BASE_PATH}"
+elif [ "${CURRENT_MACHINE}" = "machine6" ]; then
+    DATA_ROOT="${MACHINE6_DATA_ROOT}"
+    OUTPUT_BASE="${MACHINE6_OUTPUT_BASE}"
+    MODEL_BASE_PATH="${MACHINE6_MODEL_BASE_PATH}"
 fi
 
 # 多任务训练示例（用户可以修改为多个任务路径，用空格分隔）
@@ -335,10 +366,15 @@ USE_INITIAL_GRIPPER_STATE=false
 # false: 使用默认投影方式（base_multi_view_dataset_with_rot_grip_3cam.py）
 USE_DIFFERENT_PROJECTION=true
 
+# 视图选择配置
+# true: 仅使用heatmap view（3个）作为输入条件
+# false: 使用全部6个view（3个RGB + 3个Heatmap）
+USE_HEATMAP_VIEWS_ONLY=true
+
 # 输出路径（带时间戳）
 task="pour_filter"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-NAME="view_concat_${task}_local_feat_size_${LOCAL_FEATURE_SIZE}_seq_${SEQUENCE_LENGTH}_history_${NUM_HISTORY_FRAMES}_3zed_different_projection_${USE_DIFFERENT_PROJECTION}_new_projection_with_gripper_${USE_INITIAL_GRIPPER_STATE}"
+NAME="view_concat_${task}_local_feat_size_${LOCAL_FEATURE_SIZE}_seq_${SEQUENCE_LENGTH}_history_${NUM_HISTORY_FRAMES}_3zed_different_projection_${USE_DIFFERENT_PROJECTION}_new_projection_with_gripper_${USE_INITIAL_GRIPPER_STATE}_heatmap_only_${USE_HEATMAP_VIEWS_ONLY}"
 OUTPUT_PATH="${OUTPUT_BASE}/mv_rot_grip_v2_view/${NAME}/${TIMESTAMP}"
 
 # 训练参数
@@ -389,6 +425,7 @@ echo "  GPU数量: ${NUM_GPUS}"
 echo "  点云融合模式: ${USE_MERGED_POINTCLOUD}"
 echo "  不同投影模式: ${USE_DIFFERENT_PROJECTION}"
 echo "  初始夹爪状态输入: ${USE_INITIAL_GRIPPER_STATE}"
+echo "  仅使用Heatmap视图: ${USE_HEATMAP_VIEWS_ONLY}"
 echo "  历史帧数量: ${NUM_HISTORY_FRAMES}"
 echo "  WAN_TYPE: ${WAN_TYPE}"
 echo "----------------------------------------------------------------"
@@ -475,6 +512,7 @@ accelerate launch --num_processes=${NUM_GPUS} \
     $(if [ "${USE_MERGED_POINTCLOUD}" = "true" ]; then echo "--use_merged_pointcloud"; fi) \
     $(if [ "${USE_DIFFERENT_PROJECTION}" = "true" ]; then echo "--use_different_projection"; fi) \
     $(if [ "${USE_INITIAL_GRIPPER_STATE}" = "true" ]; then echo "--use_initial_gripper_state"; fi) \
+    $(if [ "${USE_HEATMAP_VIEWS_ONLY}" = "true" ]; then echo "--use_heatmap_views_only"; fi) \
     --num_history_frames ${NUM_HISTORY_FRAMES}
 
 echo "================================================================"

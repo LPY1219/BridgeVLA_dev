@@ -239,6 +239,11 @@ USE_DUAL_HEAD=true
 # Views are concatenated along batch dimension
 NUM_VIEWS=6  # Note: This is for documentation only, not used in Python args
 
+# Use only heatmap views (last 3 views) as input condition
+# true: Use only the last 3 heatmap views (skip first 3 RGB views)
+# false: Use all 6 views (3 RGB + 3 Heatmap) - default behavior
+USE_HEATMAP_VIEWS_ONLY=false
+
 # Is full finetune checkpoint (vs LoRA)
 IS_FULL_FINETUNE=false
 
@@ -327,6 +332,7 @@ echo "=============================================="
 echo "WAN Type: $WAN_TYPE"
 echo "Dual Head Mode: $USE_DUAL_HEAD"
 echo "Num Views (reference): $NUM_VIEWS (3 RGB + 3 Heatmap)"
+echo "Use Heatmap Views Only: $USE_HEATMAP_VIEWS_ONLY"
 echo "Is Full Finetune: $IS_FULL_FINETUNE"
 echo "Num Frames: $NUM_FRAMES"
 echo "Resolution: ${HEIGHT}x${WIDTH}"
@@ -413,6 +419,11 @@ fi
 # Add initial gripper state flag
 if [ "$USE_INITIAL_GRIPPER_STATE" = "true" ]; then
     PYTHON_ARGS+=(--use_initial_gripper_state)
+fi
+
+# Add heatmap views only flag
+if [ "$USE_HEATMAP_VIEWS_ONLY" = "true" ]; then
+    PYTHON_ARGS+=(--use_heatmap_views_only)
 fi
 
 # Add trail filtering if specified

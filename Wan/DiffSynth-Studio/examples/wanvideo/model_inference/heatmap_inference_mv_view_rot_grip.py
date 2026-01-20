@@ -74,6 +74,7 @@ class HeatmapInferenceMVViewRotGrip:
         num_history_frames: int = 1,
         local_feat_size: int = 5,
         use_initial_gripper_state: bool = False,
+        use_heatmap_views_only: bool = False,
         device: str = "cuda",
         is_full_finetune: bool = False,
         torch_dtype=torch.bfloat16,
@@ -95,6 +96,7 @@ class HeatmapInferenceMVViewRotGrip:
             num_history_frames: Number of history frames (1, 2, or 1+4N)
             local_feat_size: Local feature extraction neighborhood size
             use_initial_gripper_state: Whether to use initial gripper state as input
+            use_heatmap_views_only: Whether to use only heatmap views (last 3 views) as input
             device: Device to use
             is_full_finetune: Whether heatmap checkpoint is full finetune
             torch_dtype: Torch dtype
@@ -114,6 +116,7 @@ class HeatmapInferenceMVViewRotGrip:
         self.num_rotation_bins = num_rotation_bins
         self.num_history_frames = num_history_frames
         self.use_initial_gripper_state = use_initial_gripper_state
+        self.use_heatmap_views_only = use_heatmap_views_only
         self.local_feat_size = local_feat_size
         self.hidden_dim = hidden_dim
 
@@ -139,6 +142,7 @@ class HeatmapInferenceMVViewRotGrip:
         print(f"  Use dual head: {use_dual_head}")
         print(f"  Use merged pointcloud: {use_merged_pointcloud}")
         print(f"  Use different projection: {use_different_projection}")
+        print(f"  Use heatmap views only: {use_heatmap_views_only}")
         print(f"  Is full finetune: {is_full_finetune}")
         print(f"  Num history frames: {num_history_frames}")
         print(f"  Rotation resolution: {rotation_resolution}°")
@@ -273,13 +277,20 @@ class HeatmapInferenceMVViewRotGrip:
         # Import predictor model (View version, uses VAE latents directly)
         from examples.wanvideo.model_training.mv_rot_grip_vae_decode_feature_3_view import MultiViewRotationGripperPredictorView
 
+        # Determine num_views based on use_heatmap_views_only
+        # Default: 6 views (3 RGB + 3 Heatmap)
+        # If use_heatmap_views_only: 3 views (only 3 Heatmap)
+        num_views = 3 if self.use_heatmap_views_only else 6
+
+        print(f"  Predictor num_views: {num_views} ({'heatmap only' if self.use_heatmap_views_only else '3 RGB + 3 Heatmap'})")
+
         # Initialize predictor
-        # View版本：6个views（3 RGB + 3 Heatmap），每个view 48通道latents
+        # View版本：默认6个views（3 RGB + 3 Heatmap），或3个views（仅Heatmap）
         self.rot_grip_predictor = MultiViewRotationGripperPredictorView(
             rgb_channels=48,  # VAE latent channels (not decoder intermediate!)
             heatmap_channels=48,  # VAE latent channels (not decoder intermediate!)
             hidden_dim=self.hidden_dim,
-            num_views=6,  # 6 views: 3 RGB + 3 Heatmap (view concat mode)
+            num_views=num_views,  # Dynamic: 6 views (default) or 3 views (heatmap only)
             num_rotation_bins=self.num_rotation_bins,
             dropout=0.1,
             vae=None,  # VAE object (optional, for decoding heatmaps to find peaks)
@@ -687,15 +698,26 @@ class HeatmapInferenceMVViewRotGrip:
                 print(f"  RGB latents shape: {rgb_latents.shape}")
                 print(f"  Heatmap latents shape: {heatmap_latents.shape}")
 
-                # Prepare latents for predictor
-                # Predictor expects: (b, 3, 48, t_compressed, h, w)
+                # Prepare latents for predictor based on use_heatmap_views_only
+                # rgb_latents: (3, c, t, h, w) - 3 RGB views
+                # heatmap_latents: (3, c, t, h, w) - 3 Heatmap views
                 b = 1
-                rgb_latents_batched = rgb_latents.unsqueeze(0)  # (1, num_views, c, t, h, w)
-                heatmap_latents_batched = heatmap_latents.unsqueeze(0)
+                if self.use_heatmap_views_only:
+                    # Only use heatmap latents, do NOT use rgb latents
+                    print(f"  Using ONLY heatmap latents (3 views), rgb latents will NOT be used")
+                    rgb_latents_batched = None  # Do not use RGB latents
+                    heatmap_latents_batched = heatmap_latents.unsqueeze(0)  # (1, 3, c, t, h, w)
+                else:
+                    # Use both rgb and heatmap latents (6 views total)
+                    print(f"  Using both RGB and Heatmap latents (6 views total)")
+                    rgb_latents_batched = rgb_latents.unsqueeze(0)  # (1, 3, c, t, h, w)
+                    heatmap_latents_batched = heatmap_latents.unsqueeze(0)  # (1, 3, c, t, h, w)
 
                 # Prepare heatmap images from video output
-                # video_heatmap is a list of 3 videos, each video is a list of PIL Images
+                # video_heatmap is a list of 3 heatmap videos (one per heatmap view)
+                # No filtering needed - heatmap_videos already contains only 3 views
                 heatmap_videos = output['video_heatmap']  # List of 3 videos
+
                 # Stack and convert to tensor: (3, T, C, H, W) -> (1, 3, T, C, H, W)
                 heatmap_images_list = []
                 for video in heatmap_videos:
@@ -708,8 +730,8 @@ class HeatmapInferenceMVViewRotGrip:
                         frame_tensors.append(frame_tensor)
                     video_tensor = torch.stack(frame_tensors, dim=0)  # (T, C, H, W)
                     heatmap_images_list.append(video_tensor)
-                heatmap_images = torch.stack(heatmap_images_list, dim=0)  # (3, T, C, H, W)
-                heatmap_images = heatmap_images.unsqueeze(0).to(self.device)  # (1, 3, T, C, H, W)
+                heatmap_images = torch.stack(heatmap_images_list, dim=0)  # (num_views, T, C, H, W)
+                heatmap_images = heatmap_images.unsqueeze(0).to(self.device)  # (1, num_views, T, C, H, W)
 
                 print(f"  Heatmap images shape: {heatmap_images.shape}")
 
@@ -1561,6 +1583,8 @@ def main():
                        help="Local feature extraction size")
     parser.add_argument("--use_initial_gripper_state", action="store_true",
                        help="Use initial gripper state as input")
+    parser.add_argument("--use_heatmap_views_only", action="store_true",
+                       help="Use only heatmap views (last 3 views) as input condition")
 
     # Inference params
     parser.add_argument("--output_dir", type=str, default="./output",
@@ -1637,6 +1661,7 @@ def main():
         num_history_frames=args.num_history_frames,
         local_feat_size=args.local_feat_size,
         use_initial_gripper_state=args.use_initial_gripper_state,
+        use_heatmap_views_only=args.use_heatmap_views_only,
         device=args.device,
         is_full_finetune=args.is_full_finetune,
     )

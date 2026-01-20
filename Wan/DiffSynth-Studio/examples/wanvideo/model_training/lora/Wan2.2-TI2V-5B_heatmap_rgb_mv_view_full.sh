@@ -20,7 +20,7 @@ MACHINE1_CONDA_ENV="BridgeVLA_DM"
 # 机器2的CoppeliaSim配置（待填写）
 MACHINE2_COPPELIASIM_ROOT="/home/lpy/BridgeVLA_dev/finetune/CoppeliaSim_Edu_V4_1_0_Ubuntu20_04"  # TODO: 填写当前机器的CoppeliaSim路径
 MACHINE2_DISPLAY=":1.0"           # TODO: 填写当前机器的DISPLAY配置
-MACHINE2_CONDA_PATH="/home/lpy/anaconda/3etc/profile.d/conda.sh"  # TODO: 填写当前机器的conda路径
+MACHINE2_CONDA_PATH="/home/lpy/anaconda3/etc/profile.d/conda.sh"  # TODO: 填写当前机器的conda路径
 MACHINE2_CONDA_ENV="BridgeVLA_DM"   # TODO: 填写当前机器的conda环境名
 
 # 机器3的CoppeliaSim配置
@@ -250,9 +250,9 @@ echo "当前工作目录: $(pwd)"
 # NUM_GPUS=8
 
 # 其他常用配置示例（备用）：
-export CUDA_VISIBLE_DEVICES=7; NUM_GPUS=1
+# export CUDA_VISIBLE_DEVICES=7; NUM_GPUS=1
 # export CUDA_VISIBLE_DEVICES=0,1; NUM_GPUS=2
-# export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7; NUM_GPUS=8
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7; NUM_GPUS=8
 # export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7; NUM_GPUS=7
 # 测试用4个GPU（推荐先用这个排查问题）
 # export CUDA_VISIBLE_DEVICES=1,2,3,4; NUM_GPUS=4
@@ -429,10 +429,10 @@ USE_GRADIENT_CHECKPOINTING=false        # 启用梯度检查点（节省显存�
 MIXED_PRECISION="bf16"                  # 使用bf16混合精度
 DATALOADER_PIN_MEMORY=false             # 关闭pin memory以节省显存
 PREFETCH_FACTOR=2                       # 减少数据预取因子以节省显存
-# LoRA参数
-LORA_RANK=32
-# 移除patch_embedding和head.head，改为全量训练
-LORA_TARGET_MODULES="q,k,v,o,ffn.0,ffn.2"
+# # LoRA参数
+# LORA_RANK=32
+# # 移除patch_embedding和head.head，改为全量训练
+# LORA_TARGET_MODULES="q,k,v,o,ffn.0,ffn.2"
 
 # Dual Head模式 - 是否使用双head（RGB和Heatmap各自独立的head）
 USE_DUAL_HEAD=true  # 设置为true启用双head模式，false使用单head模式
@@ -650,9 +650,7 @@ accelerate launch \
   --save_epochs_interval ${SAVE_EPOCHS_INTERVAL} \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "${OUTPUT_PATH}" \
-  --lora_base_model "dit" \
-  --lora_target_modules "${LORA_TARGET_MODULES}" \
-  --lora_rank ${LORA_RANK} \
+  --trainable_models "dit" \
   $(if [ "${LOAD_PRETRAINED_CHECKPOINT}" = "true" ]; then echo "--lora_checkpoint ${PRETRAINED_CHECKPOINT}"; fi) \
   --extra_inputs "input_image,input_image_rgb,input_video_rgb" \
   --train_batch_size ${TRAIN_BATCH_SIZE_PER_GPU} \

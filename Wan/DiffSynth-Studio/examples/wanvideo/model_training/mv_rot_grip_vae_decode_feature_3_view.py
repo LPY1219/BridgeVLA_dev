@@ -358,27 +358,39 @@ class MultiViewRotationGripperPredictorView(nn.Module):
 
     def forward(
         self,
-        rgb_latents: torch.Tensor,  # (b, 3, 48, t_compressed, h_latent, w_latent) - VAE latents, NOT decoder features
-        heatmap_latents: torch.Tensor,  # (b, 3, 48, t_compressed, h_latent, w_latent) - VAE latents, NOT decoder features
-        num_future_frames: int,  # T-1，预测的未来帧数
+        rgb_latents: torch.Tensor = None,  # (b, 3, 48, t_compressed, h_latent, w_latent) - VAE latents, can be None
+        heatmap_latents: torch.Tensor = None,  # (b, 3, 48, t_compressed, h_latent, w_latent) - VAE latents, required
+        num_future_frames: int = None,  # T-1，预测的未来帧数
         heatmap_images: torch.Tensor = None,  # (b, 3, 3, t_upsampled, H, W) - 可选，完全解码的heatmap用于找峰值
         peak_positions: torch.Tensor = None,  # (b, t, 3, 2) - 可选，ground truth峰值位置 [h, w]（训练时使用）
         colormap_name: str = 'jet',  # colormap名称
         num_history_frames: int = 1,  # 历史帧数量（新增参数）
         history_gripper_states: torch.Tensor = None,  # (b, num_history_frames) - 每个历史帧的夹爪状态（0=关闭，1=打开），当use_initial_gripper_state=True时使用
     ):
-        b, v_rgb, c, t_compressed, h, w = rgb_latents.shape
-        _, v_heatmap, _, _, _, _ = heatmap_latents.shape
+        # Handle both modes: RGB+Heatmap (6 views) or Heatmap-only (3 views)
+        if rgb_latents is not None:
+            # Standard mode: RGB + Heatmap (6 views)
+            b, v_rgb, c, t_compressed, h, w = rgb_latents.shape
+            _, v_heatmap, _, _, _, _ = heatmap_latents.shape
 
-        assert v_rgb == 3 and v_heatmap == 3, f"Expected 3 RGB views and 3 Heatmap views, got {v_rgb} and {v_heatmap}"
-        assert c == 48, f"Expected 48 latent channels, got {c}"
+            assert v_rgb == 3 and v_heatmap == 3, f"Expected 3 RGB views and 3 Heatmap views, got {v_rgb} and {v_heatmap}"
+            assert c == 48, f"Expected 48 latent channels, got {c}"
 
-        # 1. View拼接模式：沿view维度拼接RGB和Heatmap latents
-        # RGB views: 0-2, Heatmap views: 3-5
-        combined_features = torch.cat([rgb_latents, heatmap_latents], dim=1)  # (b, 6, 48, t_compressed, h, w)
+            # View拼接模式：沿view维度拼接RGB和Heatmap latents
+            # RGB views: 0-2, Heatmap views: 3-5
+            combined_features = torch.cat([rgb_latents, heatmap_latents], dim=1)  # (b, 6, 48, t_compressed, h, w)
+            v_total = 6  # 3 RGB + 3 Heatmap
+        else:
+            # Heatmap-only mode: only use heatmap latents (3 views)
+            assert heatmap_latents is not None, "Either rgb_latents or heatmap_latents must be provided"
+            b, v_heatmap, c, t_compressed, h, w = heatmap_latents.shape
 
-        # 现在有6个view，每个view有48个latent channels
-        v_total = 6  # 3 RGB + 3 Heatmap
+            assert v_heatmap == 3, f"Expected 3 Heatmap views, got {v_heatmap}"
+            assert c == 48, f"Expected 48 latent channels, got {c}"
+
+            # Only use heatmap latents (3 views)
+            combined_features = heatmap_latents  # (b, 3, 48, t_compressed, h, w)
+            v_total = 3  # Only 3 Heatmap views
 
         # 2. 为每个视角提取全局特征
         # Reshape: (b, 6, 48, t, h, w) -> (b*6, 48, t, h, w)
@@ -472,9 +484,13 @@ class MultiViewRotationGripperPredictorView(nn.Module):
 
         # 2.3 扩展峰值位置到所有views
         # peak_positions目前是 (b*3, target_t, 2) - 只针对heatmap views
-        # 需要扩展到 (b*6, target_t, 2) - 所有views都使用这些峰值
-        # RGB views (0-2) 也使用heatmap views的峰值位置作为参考
-        peak_positions_expanded = torch.cat([peak_positions, peak_positions], dim=0)  # (b*6, target_t, 2)
+        if v_total == 6:
+            # RGB+Heatmap mode: 扩展到 (b*6, target_t, 2) - 所有views都使用这些峰值
+            # RGB views (0-2) 也使用heatmap views的峰值位置作为参考
+            peak_positions_expanded = torch.cat([peak_positions, peak_positions], dim=0)  # (b*6, target_t, 2)
+        else:
+            # Heatmap-only mode: 已经是 (b*3, target_t, 2)，不需要扩展
+            peak_positions_expanded = peak_positions  # (b*3, target_t, 2)
 
         # 2.4 提取局部特征（在上采样后的features上）
         local_features_raw = self.extract_local_features_at_peaks(
@@ -493,24 +509,25 @@ class MultiViewRotationGripperPredictorView(nn.Module):
         local_features = local_features.permute(0, 2, 1)  # (b*6, target_t, hidden_dim)
 
         # 拼接全局和局部特征
-        combined_global_local = torch.cat([global_features, local_features], dim=-1)  # (b*6, target_t, hidden_dim*2)
+        combined_global_local = torch.cat([global_features, local_features], dim=-1)  # (b*v_total, target_t, hidden_dim*2)
 
         # 融合
-        features = self.feature_fusion(combined_global_local)  # (b*6, target_t, hidden_dim)
+        features = self.feature_fusion(combined_global_local)  # (b*v_total, target_t, hidden_dim)
 
-        # Reshape back: (b*6, target_t, hidden_dim) -> (b, 6, target_t, hidden_dim)
+        # Reshape back: (b*v_total, target_t, hidden_dim) -> (b, v_total, target_t, hidden_dim)
         features = features.view(b, v_total, target_t, self.hidden_dim)
 
         # 3. 跨视角融合（在每个时间步）
-        # 现在有6个view：view 0-2是RGB，view 3-5是Heatmap
+        # v_total = 6 (RGB+Heatmap mode: view 0-2 RGB, view 3-5 Heatmap)
+        # v_total = 3 (Heatmap-only mode: view 0-2 Heatmap)
         fused_features = []
         for t_idx in range(target_t):
             # 取出所有视角在时间步t的特征
-            view_features = features[:, :, t_idx, :]  # (b, 6, hidden_dim)
+            view_features = features[:, :, t_idx, :]  # (b, v_total, hidden_dim)
             # Multi-head attention跨视角融合
             fused, _ = self.view_attention(
                 view_features, view_features, view_features
-            )  # (b, 6, hidden_dim)
+            )  # (b, v_total, hidden_dim)
             # 平均池化所有视角
             fused = fused.mean(dim=1)  # (b, hidden_dim)
             fused_features.append(fused)
@@ -1260,8 +1277,16 @@ def train_epoch(
                 if history_gripper_states is not None:
                     history_gripper_states = history_gripper_states.to(accelerator.device)
 
+            # 根据use_heatmap_views_only决定是否传递rgb_latents
+            if args.use_heatmap_views_only:
+                # Heatmap-only模式：不传递rgb_latents
+                model_rgb_latents = None
+            else:
+                # 默认模式：传递rgb_latents
+                model_rgb_latents = rgb_latents
+
             rotation_logits, gripper_logits = model(
-                rgb_latents=rgb_latents,  # View-concat: direct latent input
+                rgb_latents=model_rgb_latents,  # None (heatmap only) or latents (RGB + heatmap)
                 heatmap_latents=heatmap_latents,  # View-concat: direct latent input
                 num_future_frames=batch['num_future_frames'],
                 heatmap_images=heatmap_images,
@@ -1501,7 +1526,44 @@ def main():
     parser.add_argument('--use_initial_gripper_state', action='store_true', default=False,
                        help='Use initial gripper state as model input (only gripper state, not rotation)')
 
+    # 视图选择参数
+    parser.add_argument('--use_heatmap_views_only', action='store_true', default=False,
+                       help='Use only heatmap views (3 views) as input, do not use RGB views (default: False, use all 6 views)')
+
     args = parser.parse_args()
+
+    # ============================================
+    # VSCode Debug支持
+    # ============================================
+    # 需要调试时，将下面的 ENABLE_DEBUG 改为 True
+    ENABLE_DEBUG = False # 改为 True 启用VSCode调试
+    DEBUG_PORT = 5678     # VSCode调试端口
+
+    if ENABLE_DEBUG:
+        try:
+            import debugpy
+
+            # 只在主进程启用debugpy（避免多卡训练时端口冲突）
+            local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+
+            if local_rank == 0:
+                print("="*60)
+                print(f"🐛 VSCode Debug Mode Enabled")
+                print(f"  Listening on port: {DEBUG_PORT}")
+                print(f"  Waiting for debugger to attach...")
+                print("="*60)
+
+                debugpy.listen(("0.0.0.0", DEBUG_PORT))
+                debugpy.wait_for_client()
+
+                print("="*60)
+                print("✅ Debugger attached! Continuing...")
+                print("="*60)
+            else:
+                print(f"[Rank {local_rank}] Skipping debugpy (only rank 0 uses debugger)")
+
+        except ImportError:
+            print("⚠️  debugpy not installed. Install: pip install debugpy")
 
     # 验证 num_history_frames 的合法性
     def is_valid_history_frames(n):
@@ -1727,13 +1789,21 @@ def main():
 
     # 创建模型（View拼接版本）
     print("Creating MultiViewRotationGripperPredictorView model...")
-    print("  - Using VIEW concatenation (6 views: 3 RGB + 3 Heatmap)")
+
+    # 根据use_heatmap_views_only决定num_views
+    num_views = 3 if args.use_heatmap_views_only else 6
+
+    if args.use_heatmap_views_only:
+        print("  - Using HEATMAP-ONLY mode (3 views: only Heatmap)")
+    else:
+        print("  - Using VIEW concatenation (6 views: 3 RGB + 3 Heatmap)")
     print("  - Direct latent input (48 channels, not 256)")
+
     model = MultiViewRotationGripperPredictorView(
         rgb_channels=48,  # VAE latent channels (not decoder intermediate!)
         heatmap_channels=48,  # VAE latent channels (not decoder intermediate!)
         hidden_dim=args.hidden_dim,
-        num_views=6,  # View concatenation: 3 RGB + 3 Heatmap
+        num_views=num_views,  # Dynamic: 3 (heatmap only) or 6 (RGB + Heatmap)
         num_rotation_bins=args.num_rotation_bins,
         dropout=args.dropout,
         local_feature_size=args.local_feature_size,
@@ -1741,7 +1811,7 @@ def main():
     )
     # Convert model to bfloat16 to match VAE latent dtype
     model = model.to(dtype=torch.bfloat16)
-    print("✓ Model created (dtype: bfloat16, view-concat mode)")
+    print(f"✓ Model created (dtype: bfloat16, num_views={num_views}, heatmap_only={args.use_heatmap_views_only})")
 
     # 优化器和调度器
     optimizer = torch.optim.AdamW(
