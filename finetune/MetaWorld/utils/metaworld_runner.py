@@ -10,7 +10,6 @@ from utils.env import MetaWorldEnv
 from utils.multistep_wrapper import MultiStepWrapper
 from utils.video_recording_wrapper import SimpleVideoRecordingWrapper
 from utils.camera import get_grasp
-import mujoco
 import cv2
 
 from termcolor import cprint
@@ -80,8 +79,8 @@ class LargestKRecorder:
 class MetaworldRunner:
     def __init__(self,
                  output_dir,
-                 eval_episodes=20,
-                 max_steps=2000,
+                 eval_episodes=25,
+                 max_steps=600,
                  n_obs_steps=10,
                  n_action_steps=10,
                  fps=10,
@@ -118,7 +117,89 @@ class MetaworldRunner:
         self.logger_util_test = LargestKRecorder(K=3)
         self.logger_util_test10 = LargestKRecorder(K=5)
 
-    def _save_video(self, videos, episode_idx, video_dir):
+    def move(self, current_pos, to_xyz, p=20.):
+        """
+        Calculate delta position for moving from current position to target position.
+
+        Args:
+            current_pos: Current 3D position
+            to_xyz: Target 3D position
+            p: Proportional gain for control
+
+        Returns:
+            delta_pos: Delta position vector (3D)
+        """
+        delta_pos = (to_xyz - current_pos) * p
+        return delta_pos
+
+    def move_to_target_closed_loop(self, env, obs_dict, target_pos, grab_effort=0.,
+                                   threshold=0.01, max_steps=10, p=20.):
+        """
+        Closed-loop control to move to target position until error is below threshold.
+
+        Args:
+            env: Environment instance
+            obs_dict: Current observation dictionary
+            target_pos: Target 3D position (numpy array)
+            grab_effort: Gripper effort value
+            threshold: Distance threshold in meters (default 0.01 = 1cm)
+            max_steps: Maximum number of control steps
+            p: Proportional gain for control
+
+        Returns:
+            obs_dict: Final observation dictionary after reaching target or max_steps
+            total_reward: Accumulated reward during movement
+            steps_taken: Number of steps taken
+            reached: Boolean indicating if target was reached within threshold
+            done: Episode done status
+            info: Episode info dictionary
+        """
+        total_reward = 0
+        steps_taken = 0
+        done = False
+        info = {'success': False}
+
+        for step in range(max_steps):
+            # Get current hand position
+            hand_pos = obs_dict['agent_pos'][:3].cpu().numpy()
+
+            # Calculate distance to target
+            distance = np.linalg.norm(hand_pos - target_pos)
+
+            # Check if we've reached the target
+            if distance < threshold:
+                return obs_dict, total_reward, steps_taken, True, done, info
+
+            # Create action using move function
+            action_step = {
+                'delta_pos': self.move(hand_pos, to_xyz=target_pos, p=p),
+                'grab_effort': grab_effort
+            }
+            action = np.concatenate([action_step['delta_pos'], [action_step['grab_effort']]])
+
+            # Execute action
+            obs, reward, done, info = env.step([action])
+            total_reward += reward
+            steps_taken += 1
+
+            # Update observation dictionary
+            np_obs_dict = dict(obs)
+            obs_dict = dict_apply(np_obs_dict,
+                                lambda x: torch.from_numpy(np.ascontiguousarray(x)).to(
+                                    device=self.device))
+
+            # Early termination if episode is done
+            if np.all(done) or bool(info.get('success', False)):
+                break
+
+        # Return final state
+        hand_pos = obs_dict['agent_pos'][:3].cpu().numpy()
+        distance = np.linalg.norm(hand_pos - target_pos)
+        reached = distance < threshold
+
+        return obs_dict, total_reward, steps_taken, reached, done, info
+
+    def _save_video(self, videos, episode_idx, video_dir, is_success):
         """
         Save video to local file system.
         
@@ -138,7 +219,7 @@ class MetaworldRunner:
             video_for_save = np.clip(video_for_save, 0, 255).astype(np.uint8)
         
         # Generate video filename
-        video_filename = f"eval_{self.task_name}_episode_{episode_idx:03d}.mp4"
+        video_filename = f"eval_{self.task_name}_episode_{episode_idx:03d}_success_{is_success}.mp4"
         video_path = os.path.join(video_dir, video_filename)
         
         # Save video using imageio or cv2
@@ -191,10 +272,23 @@ class MetaworldRunner:
             traj_reward = 0
             is_success = False
             total_steps = 0
+            policy_calls = 0
+            max_policy_calls = self.max_steps // self.n_action_steps  # Prevent infinite loops
+
             while True:
+                # Safety check: prevent infinite loops
                 if done or bool(info['success']):
                     break
-                print("**********, obj_to_target: ", info['obj_to_target'])
+                if policy_calls >= max_policy_calls:
+                    cprint(f"Warning: Reached maximum policy calls ({max_policy_calls}), terminating episode", 'yellow')
+                    break
+                if total_steps >= self.max_steps:
+                    cprint(f"Warning: Reached maximum steps ({self.max_steps}), terminating episode", 'yellow')
+                    break
+
+                policy_calls += 1
+
+                # print("**********, obj_to_target: ", info['obj_to_target'])
                 np_obs_dict = dict[bytes, bytes](obs)
                 obs_dict = dict_apply(np_obs_dict,
                                       lambda x: torch.from_numpy(np.ascontiguousarray(x)).to(
@@ -205,13 +299,73 @@ class MetaworldRunner:
                     obs_dict_input['point_cloud'] = obs_dict['point_cloud']
                     obs_dict_input['agent_pos'] = obs_dict['agent_pos']
                     obs_dict_input['instruction'] = self.instruction
-                    action = policy.predict_action(obs_dict_input)
-                    total_steps += action.shape[0]
+                    desired_pose = policy.predict_action(obs_dict_input)
 
-                obs, reward, done, info = env.step(action)
+                    # Use closed-loop control for each waypoint
+                    step_reward = 0
+                    # Initialize previous grab_effort to -1 (gripper open)
+                    if policy_calls == 1:
+                        previous_grab_effort = -1.0
 
-                traj_reward += reward
-                done = np.all(done)
+                    for i in range(desired_pose.shape[0]):
+                        target_pos = desired_pose[i, :3].cpu().numpy() if isinstance(desired_pose, torch.Tensor) else desired_pose[i, :3]
+                        target_grab_effort = desired_pose[i, -1].item()
+                        print(f"Waypoint {i}: target_grab_effort={target_grab_effort}, previous_grab_effort={previous_grab_effort}")
+
+                        # Step 1: Move to target position using previous grab_effort
+                        obs_dict, reward_inc, steps, reached, done, info = self.move_to_target_closed_loop(
+                            env=env,
+                            obs_dict=obs_dict,
+                            target_pos=target_pos,
+                            grab_effort=previous_grab_effort,
+                            threshold=0.01,
+                            max_steps=10,
+                            p=20.
+                        )
+
+                        step_reward += reward_inc
+                        total_steps += steps
+
+                        if not reached:
+                            print(f"Warning: Waypoint {i} not reached after {steps} steps")
+
+                        # Check if episode is done or success after movement
+                        done = np.all(done) if isinstance(done, np.ndarray) else done
+                        if done or bool(info.get('success', False)):
+                            break
+
+                        # Step 2: Execute gripper action at the target position
+                        hand_pos = obs_dict['agent_pos'][:3].cpu().numpy()
+                        action = np.concatenate([np.zeros(3), [target_grab_effort]])
+                        obs, reward, done, info = env.step([action])
+                        step_reward += reward
+                        total_steps += 1
+
+                        # Update obs_dict for next iteration
+                        np_obs_dict = dict(obs)
+                        obs_dict = dict_apply(np_obs_dict,
+                                            lambda x: torch.from_numpy(np.ascontiguousarray(x)).to(
+                                                device=self.device))
+
+                        # Update previous_grab_effort for next waypoint
+                        previous_grab_effort = target_grab_effort
+
+                        # Check if episode is done or success after gripper action
+                        done = np.all(done) if isinstance(done, np.ndarray) else done
+                        if done or bool(info.get('success', False)):
+                            break
+
+                # Check final status with a zero-action step to get updated info
+                if not done and not bool(info.get('success', False)):
+                    hand_pos = obs_dict['agent_pos'][:3].cpu().numpy()
+                    action = np.concatenate([np.zeros(3), [grab_effort if 'grab_effort' in locals() else 0.]])
+                    obs, final_reward, done, info = env.step([action])
+                    traj_reward += step_reward + final_reward
+                    total_steps += 1
+                else:
+                    traj_reward += step_reward
+
+                done = np.all(done) if isinstance(done, np.ndarray) else done
                 is_success = is_success or bool(info['success'])
             
             print(f"\n total_steps: {total_steps}")
@@ -225,7 +379,7 @@ class MetaworldRunner:
                 videos = env.env.get_video()
                 if videos is not None and len(videos) > 0:
                     # Save to local file system
-                    self._save_video(videos, episode_idx, video_dir)
+                    self._save_video(videos, episode_idx, video_dir, is_success)
                     # Store last video for wandb
                     last_videos = videos.copy() if hasattr(videos, 'copy') else videos
             
@@ -299,8 +453,8 @@ class MetaworldRunner:
 class MetaworldRunnerGrasping(MetaworldRunner):
     def __init__(self,
                  output_dir,
-                 eval_episodes=20,
-                 max_steps=2000,
+                 eval_episodes=25,
+                 max_steps=600,
                  n_obs_steps=10,
                  n_action_steps=10,
                  fps=10,
@@ -351,7 +505,7 @@ class MetaworldRunnerGrasping(MetaworldRunner):
         img = np.zeros(seg_img.shape[:2], dtype=bool)
         types = seg_img[:, :, 0]
         ids = seg_img[:, :, 1]
-        geoms = types == mujoco.mjtObj.mjOBJ_GEOM
+        geoms = types == 5 #mujoco.mjtObj.mjOBJ_GEOM
         geoms_ids = np.unique(ids[geoms])
 
         for i in geoms_ids:
@@ -405,29 +559,67 @@ class MetaworldRunnerGrasping(MetaworldRunner):
                                         device=self.device))
 
             done = False
+            info = {'success': False}
             traj_reward = 0
             is_success = False
             total_steps = 0
-           
+
             grasp_step = 0
-            while not self.grasped and grasp_step < 100:
-                action = self.get_action_heuristic(obs_dict)
-                action = np.concatenate([action, np.array([self.get_grab_effort(obs_dict)])])
-                obs, reward, done, info = env.step([action])
-                np_obs_dict = dict[bytes, bytes](obs)
-                obs_dict = dict_apply(np_obs_dict,
-                                    lambda x: torch.from_numpy(np.ascontiguousarray(x)).to(
-                                        device=self.device))
-                grasp_step += 1
-                total_steps += 1
-                
+            max_grasp_attempts = 15  # Maximum number of grasp waypoints
+            grasp_attempt = 0
+            # Store the last grab_effort from grasp loop
+            last_grab_effort = -1.0  # Default to gripper open
+
+            while not self.grasped and grasp_attempt < max_grasp_attempts and total_steps < self.max_steps:
+                # Get target position from heuristic
+                target_pos = self.get_action_heuristic(obs_dict)
+                grab_effort = self.get_grab_effort(obs_dict)
+                last_grab_effort = grab_effort  # Store for later use
+
+                # Use closed-loop control to move to grasp position
+                obs_dict, reward_inc, steps, reached, done, info = self.move_to_target_closed_loop(
+                    env=env,
+                    obs_dict=obs_dict,
+                    target_pos=target_pos,
+                    grab_effort=grab_effort,
+                    threshold=0.01,  # 1cm threshold
+                    max_steps=10,
+                    p=20.
+                )
+
+                grasp_step += steps
+                total_steps += steps
+                grasp_attempt += 1
+
+                # Update obs from obs_dict
+                obs = dict_apply(obs_dict, lambda x: x.cpu().numpy() if isinstance(x, torch.Tensor) else x)
+
+                # Check if episode is done
+                done = np.all(done) if isinstance(done, np.ndarray) else done
+                if done or bool(info.get('success', False)):
+                    break
+
             if not self.grasped:
                 done = True
-                
+                cprint(f"Failed to grasp object after {grasp_step} steps", 'yellow')
+
+            policy_calls = 0
+            max_policy_calls = self.max_steps // self.n_action_steps  # Prevent infinite loops
+
             while True:
+                # Safety check: prevent infinite loops
                 if done or bool(info['success']):
                     break
-                print("**********, obj_to_target: ", info['obj_to_target'])
+                if policy_calls >= max_policy_calls:
+                    cprint(f"Warning: Reached maximum policy calls ({max_policy_calls}), terminating episode", 'yellow')
+                    break
+                if total_steps >= self.max_steps:
+                    cprint(f"Warning: Reached maximum steps ({self.max_steps}), terminating episode", 'yellow')
+                    break
+
+                policy_calls += 1
+
+                # print("**********, obj_to_target: ", info['obj_to_target'])
                 np_obs_dict = dict[bytes, bytes](obs)
                 obs_dict = dict_apply(np_obs_dict,
                                       lambda x: torch.from_numpy(np.ascontiguousarray(x)).to(
@@ -438,14 +630,73 @@ class MetaworldRunnerGrasping(MetaworldRunner):
                     obs_dict_input['point_cloud'] = obs_dict['point_cloud']
                     obs_dict_input['agent_pos'] = obs_dict['agent_pos']
                     obs_dict_input['instruction'] = self.instruction
-                    action = policy.predict_action(obs_dict_input)
-                    total_steps += action.shape[0]
-                    action[..., -1] = self.get_grab_effort(obs_dict)
+                    desired_pose = policy.predict_action(obs_dict_input)
 
-                obs, reward, done, info = env.step(action)
+                    # Use closed-loop control for each waypoint
+                    step_reward = 0
+                    # Initialize previous grab_effort from grasp loop result
+                    if policy_calls == 1:
+                        previous_grab_effort = last_grab_effort
 
-                traj_reward += reward
-                done = np.all(done)
+                    for i in range(desired_pose.shape[0]):
+                        target_pos = desired_pose[i, :3].cpu().numpy() if isinstance(desired_pose, torch.Tensor) else desired_pose[i, :3]
+                        target_grab_effort = self.get_grab_effort(obs_dict)
+                        print(f"Waypoint {i}: target_grab_effort={target_grab_effort}, previous_grab_effort={previous_grab_effort}")
+
+                        # Step 1: Move to target position using previous grab_effort
+                        obs_dict, reward_inc, steps, reached, done, info = self.move_to_target_closed_loop(
+                            env=env,
+                            obs_dict=obs_dict,
+                            target_pos=target_pos,
+                            grab_effort=previous_grab_effort,
+                            threshold=0.01,
+                            max_steps=10,
+                            p=20.
+                        )
+
+                        step_reward += reward_inc
+                        total_steps += steps
+
+                        if not reached:
+                            print(f"Warning: Waypoint {i} not reached after {steps} steps")
+
+                        # Check if episode is done or success after movement
+                        done = np.all(done) if isinstance(done, np.ndarray) else done
+                        if done or bool(info.get('success', False)):
+                            break
+
+                        # Step 2: Execute gripper action at the target position
+                        hand_pos = obs_dict['agent_pos'][:3].cpu().numpy()
+                        action = np.concatenate([np.zeros(3), [target_grab_effort]])
+                        obs, reward, done, info = env.step([action])
+                        step_reward += reward
+                        total_steps += 1
+
+                        # Update obs_dict for next iteration
+                        np_obs_dict = dict(obs)
+                        obs_dict = dict_apply(np_obs_dict,
+                                            lambda x: torch.from_numpy(np.ascontiguousarray(x)).to(
+                                                device=self.device))
+
+                        # Update previous_grab_effort for next waypoint
+                        previous_grab_effort = target_grab_effort
+
+                        # Check if episode is done or success after gripper action
+                        done = np.all(done) if isinstance(done, np.ndarray) else done
+                        if done or bool(info.get('success', False)):
+                            break
+
+                # Check final status with a zero-action step to get updated info
+                if not done and not bool(info.get('success', False)):
+                    hand_pos = obs_dict['agent_pos'][:3].cpu().numpy()
+                    action = np.concatenate([np.zeros(3), [grab_effort if 'grab_effort' in locals() else 0.8]])
+                    obs, final_reward, done, info = env.step([action])
+                    traj_reward += step_reward + final_reward
+                    total_steps += 1
+                else:
+                    traj_reward += step_reward
+
+                done = np.all(done) if isinstance(done, np.ndarray) else done
                 is_success = is_success or bool(info['success'])
             
             print(f"\n total_steps: {total_steps}")
@@ -459,7 +710,7 @@ class MetaworldRunnerGrasping(MetaworldRunner):
                 videos = env.env.get_video()
                 if videos is not None and len(videos) > 0:
                     # Save to local file system
-                    self._save_video(videos, episode_idx, video_dir)
+                    self._save_video(videos, episode_idx, video_dir, is_success)
                     # Store last video for wandb
                     last_videos = videos.copy() if hasattr(videos, 'copy') else videos
             

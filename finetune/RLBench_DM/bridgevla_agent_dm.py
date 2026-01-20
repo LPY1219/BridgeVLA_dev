@@ -8,12 +8,13 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-from PIL import Image
+from PIL import Image, ImageDraw
 from typing import List, Tuple, Dict, Any, Optional
 import cv2
 from pathlib import Path
 from scipy.spatial.transform import Rotation
 import bridgevla.mvt.utils as mvt_utils
+from yarr.agents.agent import ActResult
 
 
 # 自动检测根路径
@@ -26,6 +27,7 @@ def get_root_path():
         "/mnt/data/cyx/workspace/BridgeVLA_dev",
         "/DATA/disk1/cyx/BridgeVLA_dev",
         "/DATA/disk0/lpy/cyx/BridgeVLA_dev",
+
     ]
     for path in possible_paths:
         if os.path.exists(path):
@@ -39,17 +41,14 @@ from utils.setup_paths import setup_project_paths
 setup_project_paths()
 
 
-
-from diffsynth.pipelines.wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip import ModelConfig
 from diffsynth import load_state_dict
 from diffsynth.trainers.heatmap_utils import extract_heatmap_from_colormap
 # 导入旋转和夹爪预测模型（View拼接版本）
 # View concatenation version: uses latents directly (not decoder intermediate features)
 # Direct latent input: rgb/heatmap_channels=48 (not 256), num_views=6 (not 3)
-from examples.wanvideo.model_training.mv_rot_grip_vae_decode_feature_3_view_metaworld import MultiViewRotationGripperPredictorView
+from examples.wanvideo.model_training.mv_rot_grip_vae_decode_feature_3_view_rlbench import MultiViewRotationGripperPredictorView
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 def rgb_to_pil_image(rgb_array: torch.Tensor) -> Image.Image:
     """
@@ -85,9 +84,10 @@ def rgb_to_pil_image(rgb_array: torch.Tensor) -> Image.Image:
     return Image.fromarray(rgb_array)
 
 
-    # 辅助函数：将四元数转换为欧拉角
-def quaternion_to_discrete_euler(quat):
+def quaternion_to_discrete_euler(quat, rotation_resolution):
         """将单个四元数转换为离散化的欧拉角索引"""
+        from scipy.spatial.transform import Rotation
+
         # 归一化四元数
         quat_normalized = quat / np.linalg.norm(quat)
 
@@ -111,7 +111,41 @@ def quaternion_to_discrete_euler(quat):
 
         # 将范围从[-180, 180]转换为[0, 360]
         euler += 180
-        return euler
+
+        # 离散化
+        disc = np.around(euler / rotation_resolution).astype(np.int64)
+        # 处理边界情况：360度 = 0度
+        num_bins = int(360 / rotation_resolution)
+        disc[disc == num_bins] = 0
+
+        return disc  # (3,) - [roll_bin, pitch_bin, yaw_bin]
+    
+def quaternion_to_euler_continuous(quat):
+        """将单个四元数转换为欧拉角（度）"""
+        from scipy.spatial.transform import Rotation
+
+        # 归一化四元数
+        quat_normalized = quat / np.linalg.norm(quat)
+
+        # 确保w为正数
+        if quat_normalized[3] < 0:
+            quat_normalized = -quat_normalized
+
+        # 使用scipy的Rotation转换（scipy使用[x, y, z, w]顺序）
+        r = Rotation.from_quat(quat_normalized)
+        euler = r.as_euler("xyz", degrees=True)  # (3,) - [roll, pitch, yaw]
+
+        # 应用gimble fix
+        if 89 < euler[1] < 91:
+            euler[1] = 90
+            r = Rotation.from_euler("xyz", euler, degrees=True)
+            euler = r.as_euler("xyz", degrees=True)
+        elif -91 < euler[1] < -89:
+            euler[1] = -90
+            r = Rotation.from_euler("xyz", euler, degrees=True)
+            euler = r.as_euler("xyz", degrees=True)
+
+        return euler  # (3,) - [roll, pitch, yaw] in degrees, range [-180, 180]
 
 def move_pc_in_bound(pc, img_feat, bounds, no_op=False):
     """
@@ -822,23 +856,38 @@ class HeatmapInferenceMVRotGrip:
                 rotation_logits = rotation_logits[0].view(num_future_frames, 3, self.num_rotation_bins)
                 gripper_logits = gripper_logits[0]
 
-                print(f"  Rotation logits shape: {rotation_logits.shape}")
-                print(f"  Gripper logits shape: {gripper_logits.shape}")
-                print(f"  Expected num_future_frames: {num_future_frames}")
+                # print(f"  Rotation logits shape: {rotation_logits.shape}")
+                # print(f"  Gripper logits shape: {gripper_logits.shape}")
+                # print(f"  Expected num_future_frames: {num_future_frames}")
+
+                # Analyze gripper logits in detail
+                gripper_probs = F.softmax(gripper_logits, dim=1)  # (T, 2)
+                # print(f"  Gripper logits (first 3 frames):")
+                # for i in range(min(3, gripper_logits.shape[0])):
+                #     print(f"    Frame {i}: logits=[{gripper_logits[i,0]:.3f}, {gripper_logits[i,1]:.3f}], probs=[{gripper_probs[i,0]:.3f}, {gripper_probs[i,1]:.3f}]")
 
                 rotation_delta_bins = rotation_logits.argmax(dim=-1)  # (T, 3)
-                gripper_change = gripper_logits.argmax(dim=1)  # (T,)            
-                gripper_predictions = gripper_change.float() * 0.1 - 1.0
-                print(gripper_change, gripper_predictions)
-                gripper_predictions = gripper_predictions.cpu().numpy()
+                gripper_change = gripper_logits.argmax(dim=1)  # (T,)
 
-                print(f"  Gripper change predictions: {gripper_change.cpu().numpy()}")
-                print(f"  Initial gripper state: {initial_gripper}")
+                # print(f"  Gripper change predictions: {gripper_change.cpu().numpy()}")
+                # print(f"  Initial gripper state: {initial_gripper}")
 
                 # Convert to absolute values
+                print(f"pred rotation delta bins: {rotation_delta_bins.cpu().numpy()}")
                 rotation_delta_degrees = self._delta_bins_to_degrees(rotation_delta_bins.cpu().numpy())
                 rotation_predictions = initial_rotation + rotation_delta_degrees
                 rotation_predictions = ((rotation_predictions + 180) % 360) - 180
+
+                # Gripper predictions
+                # gripper_change[t] == 0 means same as initial, == 1 means different from initial
+                gripper_predictions = np.zeros(num_future_frames, dtype=np.int64)
+                for t in range(num_future_frames):
+                    if gripper_change[t].item() == 1:
+                        # Different from initial
+                        gripper_predictions[t] = 1 - initial_gripper
+                    else:
+                        # Same as initial
+                        gripper_predictions[t] = initial_gripper
 
                 result['rotation_predictions'] = rotation_predictions
                 result['gripper_predictions'] = gripper_predictions
@@ -886,45 +935,6 @@ class HeatmapInferenceMVRotGrip:
         """Calculate Euclidean distance between two peaks."""
         return np.sqrt((pred_peak[0] - gt_peak[0])**2 + (pred_peak[1] - gt_peak[1])**2)
 
-    def save_results(
-        self,
-        output: Dict[str, Any],
-        output_dir: str,
-        sample_id: int,
-    ):
-        """Save inference results."""
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Save output videos
-        for key in ['video_heatmap', 'video_rgb']:
-            if key in output:
-                for view_idx, view_frames in enumerate(output[key]):
-                    view_dir = os.path.join(output_dir, f"sample_{sample_id:04d}_{key}_view_{view_idx}")
-                    os.makedirs(view_dir, exist_ok=True)
-
-                    for frame_idx, frame in enumerate(view_frames):
-                        if isinstance(frame, Image.Image):
-                            frame.save(os.path.join(view_dir, f"frame_{frame_idx:04d}.png"))
-                        elif isinstance(frame, np.ndarray):
-                            cv2.imwrite(
-                                os.path.join(view_dir, f"frame_{frame_idx:04d}.png"),
-                                cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                            )
-
-        # Save rotation and gripper predictions if available
-        if 'rotation_predictions' in output:
-            np.save(
-                os.path.join(output_dir, f"sample_{sample_id:04d}_rotation_predictions.npy"),
-                output['rotation_predictions']
-            )
-
-        if 'gripper_predictions' in output:
-            np.save(
-                os.path.join(output_dir, f"sample_{sample_id:04d}_gripper_predictions.npy"),
-                output['gripper_predictions']
-            )
-
-        print(f"Results saved to: {output_dir}/sample_{sample_id:04d}_*")
 
 def convert_colormap_to_heatmap(colormap_images: List[List[Image.Image]], colormap_name: str = 'jet', resolution: int = 64) -> List[List[np.ndarray]]:
     """
@@ -956,91 +966,6 @@ def convert_colormap_to_heatmap(colormap_images: List[List[Image.Image]], colorm
         heatmap_arrays.append(frame_heatmaps)
 
     return heatmap_arrays
-
-
-def visualize_heatmaps_with_peaks(colormap_images: List[List[Image.Image]],
-                                    heatmap_arrays: List[List[np.ndarray]],
-                                    save_dir: str = '/home/lpy/BridgeVLA_dev/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_results/debug_img'):
-    """
-    可视化colormap图像和heatmap数组，并标注峰值位置
-
-    Args:
-        colormap_images: List[List[PIL.Image]] (T, num_views) - colormap格式的图像
-        heatmap_arrays: List[List[np.ndarray]] (T, num_views) - heatmap数组
-        save_dir: 保存可视化结果的目录
-    """
-    import os
-    from pathlib import Path
-
-    # 创建保存目录
-    Path(save_dir).mkdir(parents=True, exist_ok=True)
-
-    num_frames = len(colormap_images)
-    num_views = len(colormap_images[0]) if num_frames > 0 else 0
-
-    print(f"\n[Visualization] 开始可视化热力图，共 {num_frames} 帧，{num_views} 个视角")
-    print(f"[Visualization] 保存到: {save_dir}")
-
-    for frame_idx in range(num_frames):
-        # 创建子图：每个视角3行（原始colormap + 标注峰值的colormap + heatmap array）
-        fig, axes = plt.subplots(3, num_views, figsize=(5*num_views, 15))
-
-        # 如果只有一个视角，确保axes是2D数组
-        if num_views == 1:
-            axes = axes.reshape(3, 1)
-
-        for view_idx in range(num_views):
-            # 获取当前视角的colormap和heatmap
-            colormap_img = colormap_images[frame_idx][view_idx]
-            heatmap_arr = heatmap_arrays[frame_idx][view_idx]
-
-            # 找到峰值位置
-            peak_value = np.max(heatmap_arr)
-            peak_pos = np.unravel_index(np.argmax(heatmap_arr), heatmap_arr.shape)
-            peak_y, peak_x = peak_pos
-
-            # 第一行：显示原始colormap图像（不标注峰值）
-            axes[0, view_idx].imshow(colormap_img)
-            axes[0, view_idx].set_title(f'Frame {frame_idx}, View {view_idx}\nColormap (Original)')
-            axes[0, view_idx].axis('off')
-
-            # 第二行：显示colormap图像并标注峰值
-            axes[1, view_idx].imshow(colormap_img)
-            axes[1, view_idx].set_title(f'Colormap (with Peak)')
-            axes[1, view_idx].axis('off')
-
-            # 在colormap上标注峰值
-            axes[1, view_idx].plot(peak_x, peak_y, 'r*', markersize=20,
-                                   markeredgecolor='white', markeredgewidth=2)
-            axes[1, view_idx].text(peak_x, peak_y - 10, f'Peak: ({peak_x}, {peak_y})\nValue: {peak_value:.3f}',
-                                   color='white', fontsize=10, ha='center',
-                                   bbox=dict(boxstyle='round', facecolor='red', alpha=0.7))
-
-            # 第三行：显示heatmap数组
-            im = axes[2, view_idx].imshow(heatmap_arr, cmap='jet', interpolation='nearest')
-            axes[2, view_idx].set_title(f'Heatmap Array\nShape: {heatmap_arr.shape}')
-            axes[2, view_idx].axis('off')
-
-            # 在heatmap上标注峰值
-            axes[2, view_idx].plot(peak_x, peak_y, 'r*', markersize=20,
-                                   markeredgecolor='white', markeredgewidth=2)
-            axes[2, view_idx].text(peak_x, peak_y - 10, f'Peak: ({peak_x}, {peak_y})\nValue: {peak_value:.3f}',
-                                   color='white', fontsize=10, ha='center',
-                                   bbox=dict(boxstyle='round', facecolor='red', alpha=0.7))
-
-            # 添加colorbar
-            plt.colorbar(im, ax=axes[2, view_idx], fraction=0.046, pad=0.04)
-
-        plt.tight_layout()
-
-        # 保存图像
-        save_path = os.path.join(save_dir, f'heatmap_visualization_frame_{frame_idx:03d}.png')
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"[Visualization] 已保存: {save_path}")
-
-        plt.close(fig)
-
-    print(f"[Visualization] 可视化完成！共保存 {num_frames} 张图片\n")
 
 
 def get_3d_position_from_pred_heatmap(pred_heatmap_colormap: List[List[Image.Image]],
@@ -1124,158 +1049,6 @@ def get_3d_position_from_raw_heatmap(heatmap_raw: torch.Tensor,
 
     return pred_position
 
-
-def visualize_predictions_with_rot_grip(
-    gt_heatmap_video: List[List[Image.Image]],
-    pred_heatmap_video: List[List[Image.Image]],
-    gt_rgb_video: List[List[Image.Image]],
-    pred_rgb_video: List[List[Image.Image]],
-    gt_rotation: np.ndarray,
-    pred_rotation: np.ndarray,
-    gt_gripper: np.ndarray,
-    pred_gripper: np.ndarray,
-    initial_rotation: np.ndarray,
-    initial_gripper: int,
-    prompt: str,
-    dataset_idx: int,
-    save_path: str,
-    heatmap_distances: Dict[str, List[List[float]]] = None,  # {'distances': (T, num_views), 'gt_peaks': (T, num_views, 2), 'pred_peaks': (T, num_views, 2)}
-    colormap_name: str = 'jet'
-):
-    """
-    可视化多视角预测结果，包含rotation、gripper和heatmap peak信息
-
-    Args:
-        gt_heatmap_video: List[List[PIL.Image]] (T, num_views) - Ground truth heatmaps
-        pred_heatmap_video: List[List[PIL.Image]] (T, num_views) - Predicted heatmaps
-        gt_rgb_video: List[List[PIL.Image]] (T, num_views) - Ground truth RGB
-        pred_rgb_video: List[List[PIL.Image]] (T, num_views) - Predicted RGB
-        gt_rotation: (T-1, 3) - Ground truth rotation [roll, pitch, yaw] degrees
-        pred_rotation: (T-1, 3) - Predicted rotation [roll, pitch, yaw] degrees
-        gt_gripper: (T-1,) - Ground truth gripper states
-        pred_gripper: (T-1,) - Predicted gripper states
-        initial_rotation: (3,) - Initial rotation
-        initial_gripper: int - Initial gripper state
-        prompt: str - Text prompt
-        dataset_idx: int - Dataset index
-        save_path: str - Path to save visualization
-        heatmap_distances: Dict with 'distances', 'gt_peaks', 'pred_peaks' - Optional heatmap peak info
-        colormap_name: str - Colormap name for peak extraction
-    """
-    num_frames = len(gt_heatmap_video)
-    num_views = len(gt_heatmap_video[0])
-
-    # 新布局：时间维度沿横轴，每列是一个时间步
-    # 总共3个section（每个section有num_view行）：
-    # 1. GT RGB (num_view 行)
-    # 2. Pred RGB (num_view 行)
-    # 3. Heatmap (num_view 行) - 使用GT heatmap，同时显示GT和pred峰值
-    # 横轴：num_frames 列
-
-    fig = plt.figure(figsize=(3*num_frames, 3*num_views*3 + 2))  # +2 for rotation/gripper info
-    gs = fig.add_gridspec(num_views*3, num_frames, hspace=0.3, wspace=0.1)
-
-    for view_idx in range(num_views):
-        # 每个section的起始行
-        gt_rgb_row = view_idx
-        pred_rgb_row = num_views + view_idx
-        heatmap_row = num_views*2 + view_idx
-
-        for frame_idx in range(num_frames):
-            # 获取当前帧当前视角的图像
-            gt_heatmap_frame = gt_heatmap_video[frame_idx][view_idx]
-            gt_rgb_frame = gt_rgb_video[frame_idx][view_idx]
-            pred_rgb_frame = pred_rgb_video[frame_idx][view_idx]
-
-            # 获取peak位置（如果提供）
-            gt_peak = None
-            pred_peak = None
-            peak_dist = None
-            if heatmap_distances is not None:
-                gt_peak = heatmap_distances['gt_peaks'][frame_idx][view_idx]
-                pred_peak = heatmap_distances['pred_peaks'][frame_idx][view_idx]
-                peak_dist = heatmap_distances['distances'][frame_idx][view_idx]
-
-            # 第1部分：GT RGB
-            ax = fig.add_subplot(gs[gt_rgb_row, frame_idx])
-            ax.imshow(gt_rgb_frame)
-            if gt_peak is not None:
-                ax.plot(gt_peak[0], gt_peak[1], 'r*', markersize=8, markeredgecolor='white', markeredgewidth=0.5)
-            if frame_idx == 0:
-                ax.set_ylabel(f'GT RGB V{view_idx}', fontsize=9, fontweight='bold')
-            if view_idx == 0:
-                ax.set_title(f'T{frame_idx}', fontsize=8)
-            ax.axis('off')
-
-            # 第2部分：Pred RGB
-            ax = fig.add_subplot(gs[pred_rgb_row, frame_idx])
-            ax.imshow(pred_rgb_frame)
-            if pred_peak is not None:
-                ax.plot(pred_peak[0], pred_peak[1], 'b*', markersize=8, markeredgecolor='white', markeredgewidth=0.5)
-            if frame_idx == 0:
-                ax.set_ylabel(f'Pred RGB V{view_idx}', fontsize=9, fontweight='bold')
-            ax.axis('off')
-
-            # 第3部分：Heatmap (使用GT heatmap，同时显示GT和pred峰值)
-            ax = fig.add_subplot(gs[heatmap_row, frame_idx])
-            ax.imshow(gt_heatmap_frame)
-            if gt_peak is not None and pred_peak is not None:
-                # 红星 = GT, 蓝星 = pred
-                ax.plot(gt_peak[0], gt_peak[1], 'r*', markersize=10, markeredgecolor='white', markeredgewidth=0.8, label='GT')
-                ax.plot(pred_peak[0], pred_peak[1], 'b*', markersize=10, markeredgecolor='white', markeredgewidth=0.8, label='Pred')
-            # 在heatmap下方显示距离
-            if peak_dist is not None and view_idx == 0:  # 只在第一个view显示距离
-                ax.text(0.5, -0.05, f'Dist: {peak_dist:.1f}px', ha='center', va='top',
-                       transform=ax.transAxes, fontsize=6, color='blue')
-            if frame_idx == 0:
-                ax.set_ylabel(f'Heatmap V{view_idx}', fontsize=9, fontweight='bold')
-
-            # 在heatmap下方显示rotation和gripper信息
-            if view_idx == num_views - 1:  # 只在最后一个view显示
-                if frame_idx == 0:
-                    # 初始状态
-                    info_text = f'Init:\nR:{initial_rotation[0]:.0f},{initial_rotation[1]:.0f},{initial_rotation[2]:.0f}\nG:{"O" if initial_gripper==1 else "C"}'
-                else:
-                    # 预测和真实值
-                    idx = frame_idx - 1
-                    gt_r = gt_rotation[idx]
-                    pred_r = pred_rotation[idx]
-                    gt_g = gt_gripper[idx]
-                    pred_g = pred_gripper[idx]
-
-                    # 计算rotation误差
-                    rot_err = np.abs(pred_r - gt_r)
-                    rot_err = np.minimum(rot_err, 360 - rot_err)
-
-                    info_text = f'GT: {gt_r[0]:.0f},{gt_r[1]:.0f},{gt_r[2]:.0f} {"O" if gt_g==1 else "C"}\n'
-                    info_text += f'Pred: {pred_r[0]:.0f},{pred_r[1]:.0f},{pred_r[2]:.0f} {"O" if pred_g==1 else "C"}\n'
-                    info_text += f'Err: {rot_err[0]:.1f},{rot_err[1]:.1f},{rot_err[2]:.1f}'
-
-                ax.text(0.5, -0.15, info_text, ha='center', va='top',
-                       transform=ax.transAxes, fontsize=6, family='monospace')
-
-            ax.axis('off')
-
-    # 计算总体统计
-    rotation_errors = np.abs(pred_rotation - gt_rotation)
-    rotation_errors = np.minimum(rotation_errors, 360 - rotation_errors)
-    mean_rotation_error = rotation_errors.mean(axis=0)
-    gripper_accuracy = (pred_gripper == gt_gripper).sum() / len(pred_gripper) * 100
-
-    # 添加总标题
-    title = f'Multi-View Sample (Index {dataset_idx})\n{prompt[:80]}...\n'
-    title += f'Rotation Error (deg): R={mean_rotation_error[0]:.1f}, P={mean_rotation_error[1]:.1f}, Y={mean_rotation_error[2]:.1f} | '
-    title += f'Gripper Acc: {gripper_accuracy:.1f}%'
-    if heatmap_distances is not None:
-        mean_heatmap_dist = np.mean(heatmap_distances['distances'])
-        title += f' | Heatmap Dist: {mean_heatmap_dist:.1f}px'
-
-    fig.suptitle(title, fontsize=10, fontweight='bold')
-
-    # 保存结果
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  Visualization saved to {save_path}")
 
 class ProjectionInterface:
     """
@@ -1387,98 +1160,6 @@ class ProjectionInterface:
         heatmap_sequence=action_trans.view(bs,np,num_img,height,width)
         return heatmap_sequence
 
-    def visualize_hm(self, heatmaps, h, w, save_path=None):
-        """
-        可视化多视角heatmap序列并保存到指定路径
-
-        Args:
-            heatmaps: torch.Tensor (T, num_views, h*w) - heatmap张量
-            h: int - heatmap高度
-            w: int - heatmap宽度
-            save_path: str - 保存图像的路径，如果为None则不保存
-
-        Returns:
-            None
-        """
-        import matplotlib.pyplot as plt
-        import numpy as np
-
-        # 将heatmap reshape为 (T, num_views, h, w)
-        T, num_views, hw = heatmaps.shape
-        assert hw == h * w, f"Expected h*w={h*w}, got {hw}"
-
-        # Reshape heatmaps
-        heatmaps_reshaped = heatmaps.view(T, num_views, h, w)
-
-        # 转换为numpy并归一化
-        if torch.is_tensor(heatmaps_reshaped):
-            heatmaps_np = heatmaps_reshaped.detach().cpu().numpy()
-        else:
-            heatmaps_np = heatmaps_reshaped
-
-        # 对每个heatmap进行归一化到[0,1]
-        heatmaps_normalized = []
-        for t in range(T):
-            frame_views = []
-            for v in range(num_views):
-                hm = heatmaps_np[t, v]
-                # 归一化到[0, 1]
-                hm_min = hm.min()
-                hm_max = hm.max()
-                if hm_max > hm_min:
-                    hm_norm = (hm - hm_min) / (hm_max - hm_min)
-                else:
-                    hm_norm = hm
-                frame_views.append(hm_norm)
-            heatmaps_normalized.append(frame_views)
-
-        # 创建可视化图形: 行=时间步，列=视角
-        fig, axes = plt.subplots(T, num_views, figsize=(num_views * 3, T * 2.5))
-
-        # 处理单行或单列的情况
-        if T == 1 and num_views == 1:
-            axes = np.array([[axes]])
-        elif T == 1:
-            axes = axes.reshape(1, -1)
-        elif num_views == 1:
-            axes = axes.reshape(-1, 1)
-
-        # 绘制每个heatmap
-        for t in range(T):
-            for v in range(num_views):
-                ax = axes[t, v]
-                hm = heatmaps_normalized[t][v]
-
-                # 使用jet colormap显示heatmap
-                im = ax.imshow(hm, cmap='jet', interpolation='nearest')
-
-                # 添加标题
-                if t == 0:
-                    ax.set_title(f'View {v}', fontsize=10, fontweight='bold')
-                if v == 0:
-                    ax.set_ylabel(f'T{t}', fontsize=9, fontweight='bold')
-
-                # 找到最大值位置并标记
-                max_idx = np.unravel_index(np.argmax(hm), hm.shape)
-                ax.plot(max_idx[1], max_idx[0], 'r+', markersize=8, markeredgewidth=2)
-
-                # 移除坐标轴刻度
-                ax.set_xticks([])
-                ax.set_yticks([])
-
-        plt.tight_layout()
-        plt.suptitle(f'Multi-View Heatmap Sequence (T={T}, Views={num_views})',
-                    fontsize=12, fontweight='bold', y=0.995)
-
-        # 保存图像
-        if save_path is not None:
-            # 确保目录存在
-            import os
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            print(f"Heatmap visualization saved to: {save_path}")
-
-        plt.close(fig)
 
     def get_position_from_heatmap(self, heatmaps,rev_trans,dyn_cam_info=None, y_q=None,visualize=False, use_softmax=True):
         """
@@ -1489,8 +1170,6 @@ class ProjectionInterface:
         """
         h ,w = self.img_size
         bs,nc,h_w=heatmaps.shape
-        # if visualize:
-        #     self.visualize_hm(heatmaps, h, w,save_path="/home/lpy/BridgeVLA_dev/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_results/debug_img/debug.png")
 
         if use_softmax:
             hm = torch.nn.functional.softmax(heatmaps, 2)
@@ -1526,7 +1205,7 @@ class RVTAgent:
     def __init__(self, args):
         self.args = args
         self.projection_interface = ProjectionInterface(args.img_size[0])
-        
+
         self.inferencer = HeatmapInferenceMVRotGrip(
             lora_checkpoint=args.lora_checkpoint,
             rot_grip_checkpoint=args.rot_grip_checkpoint,
@@ -1539,9 +1218,41 @@ class RVTAgent:
             hidden_dim=args.hidden_dim,
             num_rotation_bins=args.num_rotation_bins
         )
-        
+
         self.scene_bounds = args.scene_bounds
         self.use_merged_pointcloud = args.use_merged_pointcloud
+
+        # RLBench cameras (front, left_shoulder, right_shoulder, wrist)
+        # 训练时使用前3个相机
+        self.cameras = ["front", "left_shoulder", "right_shoulder", "wrist"]
+
+    def _extract_obs(self, obs, channels_last: bool = False):
+        """
+        从RLBench Observation对象中提取点云和RGB数据
+        与训练数据集的_extract_obs方法保持一致
+
+        Args:
+            obs: RLBench Observation对象
+            channels_last: 是否使用channels_last格式
+
+        Returns:
+            pcd: List of point clouds for each camera [cam1_pcd, cam2_pcd, ...]
+            rgb: List of RGB images for each camera [cam1_rgb, cam2_rgb, ...]
+        """
+        obs_dict = vars(obs)
+        obs_dict = {k: v for k, v in obs_dict.items() if v is not None}
+        obs_dict = {
+            k: v for k, v in obs_dict.items()
+            if any(kw in k for kw in ["rgb", "point_cloud"])
+        }
+
+        for (k, v) in [(k, v) for k, v in obs_dict.items() if 'point_cloud' in k]:
+            obs_dict[k] = v.astype(np.float32)
+
+        pcd = [obs_dict[f"{cam}_point_cloud"] for cam in self.cameras]
+        rgb = [obs_dict[f"{cam}_rgb"] for cam in self.cameras]
+
+        return pcd, rgb
         
     
     def preprocess(self, pcd_list, feat_list, all_poses: np.ndarray):
@@ -1650,66 +1361,78 @@ class RVTAgent:
         return final_pc_list, processed_feat_list, wpt_local, action_rot_xyzw, rev_trans
 
 
-    def predict_action(self, observation: dict):
-        observation = observation
-        pcd = observation["point_cloud"][...].cpu().numpy()
-        start_pcd, start_rgb = pcd[..., :3], pcd[..., 3:]
+    def predict_action(self, obs, lang_goal):
+        """
+        从RLBench observation预测动作序列
 
-        start_xyz = observation["agent_pos"][:3].cpu().numpy()
-        start_pose = np.concatenate([
-                        start_xyz, 
-                        np.array([0, 0, 0, 1])], 
-                        axis=0
-                    )
-        start_gripper = 1.0
-        start_rotation = quaternion_to_discrete_euler(start_pose[3:7])  # (3,)
-        
-        
-        prompt = observation["instruction"]   
+        Args:
+            obs: RLBench Observation对象
+            lang_goal: 任务指令文本
 
-        start_rotation_degrees = self.inferencer._bins_to_degrees(start_rotation)
+        Returns:
+            action: (T, 8) array - [x, y, z, qx, qy, qz, qw, gripper]
+        """
+        # 1. 从RLBench observation中提取多相机数据
+        # 返回List of arrays: [cam1, cam2, cam3, cam4]
+        start_pcd_list, start_rgb_list = self._extract_obs(obs)
+
+        # 2. 获取当前gripper pose和状态
+        start_pose = obs.gripper_pose  # (7,) [x, y, z, qx, qy, qz, qw]
+        start_gripper = obs.gripper_open
+
+        # 3. 转换quaternion为欧拉角（用于rotation prediction）
+        # start_rotation = quaternion_to_discrete_euler(start_pose[3:7], self.inferencer.rotation_resolution)  # (3,) - [roll, pitch, yaw] bins
+        # start_rotation_degrees = self.inferencer.xrxs(start_rotation)
+        start_rotation_degrees = quaternion_to_euler_continuous(start_pose[3:7])  # (3,) - [roll, pitch, yaw] in degrees
+
+        # 4. 预处理点云和RGB数据
+        # preprocess需要输入格式：pcd_list[[cam1,cam2,cam3,...]], feat_list[[cam1,cam2,cam3,...]]
         processed_pcd_list, processed_rgb_list, processed_pos, processed_rot_xyzw, rev_trans = self.preprocess(
-            [start_pcd], [start_rgb], [start_pose]
+            [start_pcd_list],  # 外层list表示时间步，这里只有1个时间步
+            [start_rgb_list],   # 外层list表示时间步
+            [start_pose]        # (1, 7) - 只有起始pose
         )
-        
+
         processed_start_pcd = processed_pcd_list[0]
         processed_start_rgb = processed_rgb_list[0]
-        processed_poses=torch.cat((processed_pos, processed_rot_xyzw), dim=1) # num,7
+        processed_poses = torch.cat((processed_pos, processed_rot_xyzw), dim=1)  # (1, 7)
         processed_start_pose = processed_poses[0]
-        
+
+        # 5. 投影点云到多视角RGB图像
         rgb_image = self.projection_interface.project_pointcloud_to_rgb(
-            processed_start_pcd, processed_start_rgb
+            processed_start_pcd, processed_start_rgb, img_aug_before=0.0
         )  # (1, num_views, H, W, 6)
         rgb_image = rgb_image[0, :, :, :, 3:]  # (num_views, H, W, 3)
+
         # 确保是numpy数组
         if isinstance(rgb_image, torch.Tensor):
             rgb_image = rgb_image.cpu().numpy()
         rgb_image = (rgb_image * 255).astype(np.uint8)  # (num_views, H, W, 3)
         num_views = rgb_image.shape[0]
-        
-        img_locations= self.projection_interface.project_pose_to_pixel(
-                processed_pos.unsqueeze(0).to(self.projection_interface.renderer_device) 
+
+        # 6. 生成heatmap
+        img_locations = self.projection_interface.project_pose_to_pixel(
+            processed_pos.unsqueeze(0).to(self.projection_interface.renderer_device)
         )  # (bs, num_poses, num_views, 2)
 
-        # 使用用户提供的heatmap接口生成heatmap
-        heatmap_sequence= self.projection_interface.generate_heatmap_from_img_locations(
+        heatmap_sequence = self.projection_interface.generate_heatmap_from_img_locations(
             img_locations,
             self.args.img_size[0], self.args.img_size[1],
-        ) # (bs, seq_len+1, num_views, H, W)
+        )  # (bs, seq_len+1, num_views, H, W)
         heatmap_sequence = heatmap_sequence[0, :, :, :, :]  # (seq_len+1, num_views, H, W)
         heatmap_start = heatmap_sequence[0]  # (num_views, H, W)
-        
+
+        # 7. 准备输入图像（RGB和heatmap）
         input_image = []
         input_image_rgb = []
-        
+
         for v in range(num_views):
             rgb_view = rgb_image[v]  # (H, W, 3)
             pil_img = rgb_to_pil_image(rgb_view)
             input_image_rgb.append(pil_img)
-            
+
         for v in range(num_views):
             heatmap_view = heatmap_start[v]  # (H, W)
-            # 转换单个热力图为PIL（与client端一致的处理）
             heatmap_np = heatmap_view.cpu().numpy()
 
             # 归一化到[0, 1]
@@ -1720,44 +1443,68 @@ class RVTAgent:
             else:
                 view_hm_norm = heatmap_np
 
-            # 应用colormap（使用JET colormap，与client端一致）
+            # 应用colormap（使用jet，与训练一致）
             view_hm_uint8 = (view_hm_norm * 255).astype(np.uint8)
             view_hm_colored = cv2.applyColorMap(view_hm_uint8, cv2.COLORMAP_JET)
             view_hm_colored = cv2.cvtColor(view_hm_colored, cv2.COLOR_BGR2RGB)
 
-            # 转换为PIL Image
             pil_img = Image.fromarray(view_hm_colored)
             input_image.append(pil_img)
         
-        # 执行推理
-        # 使用 sequence_length 作为 num_frames 以匹配数据集
+        # 8. 执行推理
         output = self.inferencer.predict(
-            prompt=prompt,
+            prompt=lang_goal,
             input_image=input_image,
             input_image_rgb=input_image_rgb,
             initial_rotation=start_rotation_degrees,
             initial_gripper=start_gripper,
-            num_frames=self.args.sequence_length+1, # 需要包括初始帧进来
+            num_frames=self.args.sequence_length + 1,  # 包括初始帧
             height=self.args.img_size[0],
             width=self.args.img_size[1],
             num_inference_steps=50,
             cfg_scale=1.0,
         )
-
+        
         pred_heatmap = output['video_heatmap']
 
-        # 从预测的heatmap提取3D位置
+        # 9. 从预测的heatmap提取3D位置
         pred_position = get_3d_position_from_pred_heatmap(
             pred_heatmap_colormap=pred_heatmap,
             rev_trans=rev_trans,
             projection_interface=self.projection_interface,
             colormap_name='jet'
-        )  # (num_frames, 3)
-        
-        pred_gripper = output['gripper_predictions']  # (T-1,)
-        # delta_action_position = pred_position[1:] - pred_position[:-1]  # (T, 3)
-        # action = np.concatenate([50*delta_action_position, pred_gripper[:, None]], axis=1)  # (T, 4)
+        )  # (T, 3) where T = sequence_length
+    
+    
+        # 10. 提取rotation和gripper预测
+        pred_rotation = output['rotation_predictions']  # (T-1, 3) - [roll, pitch, yaw] in degrees
+        pred_gripper = output['gripper_predictions']  # (T-1,) - continuous gripper values
 
-        action = np.concatenate([pred_position[1:], pred_gripper[:, None]], axis=1)  # (T, 4)
-        # action = action[:10] # only keep the first 10 actions
-        return action
+        # 11. 转换rotation为quaternion
+        # pred_rotation shape: (T-1, 3) in degrees, 未来帧的rotation
+        pred_quaternions = []
+        for i in range(len(pred_rotation)):
+            euler_deg = pred_rotation[i]  # (3,) - [roll, pitch, yaw] in degrees
+            r = Rotation.from_euler('xyz', euler_deg, degrees=True)
+            quat_xyzw = r.as_quat()  # (4,) - [qx, qy, qz, qw]
+            pred_quaternions.append(quat_xyzw)
+        pred_quaternions = np.array(pred_quaternions)  # (T-1, 4)
+
+        # 12. 组装动作序列
+        # pred_position: (T, 3) - 包含起始帧和未来帧
+        # 我们需要未来帧的位置: pred_position[1:]  (T-1, 3)
+        # pred_quaternions: (T-1, 4)
+        # pred_gripper: (T-1,)
+        
+        # 组装动作序列为 ActResult 列表
+        action_list = []
+        for i in range(len(pred_position) - 1):
+            continuous_action = np.concatenate([
+                pred_position[i + 1],      # (3,) - position
+                pred_quaternions[i],        # (4,) - quaternion
+                pred_gripper[i:i+1],       # (1,) - gripper
+                np.array([1.0])            # (1,) - collision
+            ])
+            action_list.append(ActResult(continuous_action))
+
+        return action_list

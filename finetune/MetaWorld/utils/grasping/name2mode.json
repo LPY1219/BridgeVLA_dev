@@ -4,7 +4,7 @@
     "basketball-v2-goal-observable": "grasp",
     "shelf-place-v2-goal-observable": "grasp",
     "button-press-v2-goal-observable": "push",
-    "button-press-topdown-v2-goal-observable": "push",
+    "button-press-topdown-v2-goal-observable": "grasp",
     "faucet-close-v2-goal-observable": "push",
     "faucet-open-v2-goal-observable": "push",
     "handle-press-v2-goal-observable": "grasp", 

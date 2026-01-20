@@ -6,6 +6,9 @@ if [ -d "/mnt/data/cyx/workspace/BridgeVLA_dev" ]; then
 elif [ -d "/DATA/disk1/cyx/BridgeVLA_dev" ]; then
     ROOT_PATH_2="/DATA/disk1/cyx/BridgeVLA_dev"
     ROOT_PATH=$ROOT_PATH_2
+elif [ -d "/DATA/disk0/lpy/cyx/BridgeVLA_dev" ]; then
+    ROOT_PATH_3="/DATA/disk0/lpy/cyx/BridgeVLA_dev"
+    ROOT_PATH=$ROOT_PATH_3
 else
     echo "Error: Cannot find BridgeVLA root directory"
     exit 1
@@ -20,17 +23,26 @@ MACHINE1_CONDA_ENV="metaworld_eval"
 MACHINE2_CONDA_PATH="/home/yw/anaconda3/etc/profile.d/conda.sh"
 MACHINE2_CONDA_ENV="metaworld"
 
+# 机器2配置（当前机器）
+MACHINE3_CONDA_PATH="/home/yw/anaconda3/etc/profile.d/conda.sh"
+MACHINE3_CONDA_ENV="metaworld"
+
 # 检测机器并设置conda环境
 if [ "${ROOT_PATH}" = "${ROOT_PATH_1}" ]; then
     echo "检测到机器1，使用配置1"
     source "${MACHINE1_CONDA_PATH}"
     conda activate "${MACHINE1_CONDA_ENV}"
     CURRENT_MACHINE="machine1"
-else
+elif [ "${ROOT_PATH}" = "${ROOT_PATH_2}" ]; then
     echo "检测到机器2，使用配置2"
     source "${MACHINE2_CONDA_PATH}"
     conda activate "${MACHINE2_CONDA_ENV}"
     CURRENT_MACHINE="machine2"
+else
+    echo "检测到机器3，使用配置3"
+    source "${MACHINE3_CONDA_PATH}"
+    conda activate "${MACHINE3_CONDA_ENV}"
+    CURRENT_MACHINE="machine3"
 fi
 
 echo "Using ROOT_PATH: $ROOT_PATH"
@@ -40,14 +52,14 @@ cd "${ROOT_PATH}/Wan/DiffSynth-Studio/examples/wanvideo/model_inference"
 # ==============================================
 # 模型和数据配置
 # ==============================================
-LORA_CHECKPOINT="/DATA/disk1/cyx/BridgeVLA_dev/ckpt/heatmap/9tasks/epoch-99.safetensors"
-ROT_GRIP_CHECKPOINT="/DATA/disk1/cyx/BridgeVLA_dev/ckpt/rot_grip/epoch-100.pth"
+LORA_CHECKPOINT="/DATA/disk0/lpy/cyx/BridgeVLA_dev/ckpt/heatmap/9tasks_5traj/heatmap.safetensors"
+ROT_GRIP_CHECKPOINT="/DATA/disk0/lpy/cyx/BridgeVLA_dev/ckpt/rot_grip/9tasks_5traj/rotgrip.pth"
 
 # 输出目录
-OUTPUT_DIR="${ROOT_PATH}/metaworld_results"
+OUTPUT_DIR="${ROOT_PATH}/metaworld_results_grasp"
 
 # 模型基础路径
-MODEL_BASE_PATH="/DATA/disk1/cyx/huggingface/Wan2.2-TI2V-5B-fused"
+MODEL_BASE_PATH="/DATA/disk0/lpy/cyx/huggingface/Wan2.2-TI2V-5B"
 
 # 模型类型
 WAN_TYPE="5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP"
@@ -86,7 +98,7 @@ IMG_SIZE="256,256"                           # 图像尺寸（height,width）
 # ==============================================
 # GPU配置
 # ==============================================
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 
 # ==============================================
 # RLBench测试配置
@@ -104,15 +116,13 @@ export CUDA_VISIBLE_DEVICES=3
 TASKS=(
 #    "door-open"
 #    "door-close"
-#    "basketball"
    "button-press"
-#    "button-press-topdown"
-#    "faucet-close"
-#    "faucet-open"
-#    "handle-press"
-#    "shelf-place"
-#    "hammer"
-#    "assembly"
+   "button-press-topdown"
+   "faucet-close"
+   "faucet-open"
+   "handle-press"
+   "shelf-place"
+   "hammer"
 )
 CONSTANT_GRIPPER_NUM=1.0
 # 如果只想测试单个任务，可以这样设置：

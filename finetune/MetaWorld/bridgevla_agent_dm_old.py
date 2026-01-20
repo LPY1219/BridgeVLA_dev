@@ -39,17 +39,16 @@ from utils.setup_paths import setup_project_paths
 setup_project_paths()
 
 
-
-from diffsynth.pipelines.wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip import ModelConfig
+# 导入多视角pipeline (支持旋转和夹爪预测)
+from diffsynth.pipelines.wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip import WanVideoPipeline, ModelConfig
 from diffsynth import load_state_dict
 from diffsynth.trainers.heatmap_utils import extract_heatmap_from_colormap
-# 导入旋转和夹爪预测模型（View拼接版本）
-# View concatenation version: uses latents directly (not decoder intermediate features)
-# Direct latent input: rgb/heatmap_channels=48 (not 256), num_views=6 (not 3)
-from examples.wanvideo.model_training.mv_rot_grip_vae_decode_feature_3_view_metaworld import MultiViewRotationGripperPredictorView
+# 导入旋转和夹爪预测模型（使用 delta 版本）
+# 两个模型的接口完全相同，都不需要初始状态作为输入，只预测 delta 值
+from examples.wanvideo.model_training.mv_rot_grip_vae_decode_feature_3_metaworld import MultiViewRotationGripperPredictor
+
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 def rgb_to_pil_image(rgb_array: torch.Tensor) -> Image.Image:
     """
@@ -149,215 +148,291 @@ class HeatmapInferenceMVRotGrip:
     """多视角热力图 + 旋转和夹爪预测推断类"""
 
     def __init__(self,
-        model_base_path: str,
-        lora_checkpoint: str,
-        rot_grip_checkpoint: Optional[str] = None,
-        wan_type: str = "5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP",
-        use_dual_head: bool = True,
-        rotation_resolution: float = 5.0,
-        hidden_dim: int = 512,
-        num_rotation_bins: int = 72,
-        num_history_frames: int = 1,
-        local_feat_size: int = 5,
-        use_initial_gripper_state: bool = False,
-        device: str = "cuda",
-        is_full_finetune: bool = False,
-        torch_dtype=torch.bfloat16,
-    ):
+                 lora_checkpoint_path: str,
+                 rot_grip_checkpoint_path: str,
+                 wan_type: str,
+                 model_base_path: str = None,
+                 device: str = "cuda",
+                 torch_dtype=torch.bfloat16,
+                 use_dual_head: bool = False,
+                 rotation_resolution: float = 5.0,
+                 hidden_dim: int = 512,
+                 num_rotation_bins: int = 72):
         """
-        Initialize inference with rotation and gripper prediction.
+        初始化多视角推断器 + 旋转和夹爪预测器
 
         Args:
-            model_base_path: Path to base model
-            lora_checkpoint: Path to LoRA checkpoint for heatmap diffusion model
-            rot_grip_checkpoint: Path to rotation/gripper predictor checkpoint (optional)
-            wan_type: Model type (default: 5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP)
-            use_dual_head: Whether to use dual head mode
-            use_merged_pointcloud: Whether to use merged pointcloud from 3 cameras
-            use_different_projection: Whether to use different projection mode
-            rotation_resolution: Rotation angle resolution (degrees)
-            hidden_dim: Hidden layer dimension for rot/grip predictor
-            num_rotation_bins: Number of rotation bins
-            num_history_frames: Number of history frames (1, 2, or 1+4N)
-            local_feat_size: Local feature extraction neighborhood size
-            use_initial_gripper_state: Whether to use initial gripper state as input
-            device: Device to use
-            is_full_finetune: Whether heatmap checkpoint is full finetune
-            torch_dtype: Torch dtype
+            lora_checkpoint_path: LoRA模型检查点路径 (用于diffusion model)
+            rot_grip_checkpoint_path: 旋转和夹爪预测器检查点路径
+            wan_type: 模型类型（必须是多视角+旋转夹爪版本）
+            model_base_path: 基础模型路径
+            device: 设备
+            torch_dtype: 张量类型
+            use_dual_head: 是否使用双head模式
+            rotation_resolution: 旋转角度分辨率（度）
+            hidden_dim: 隐藏层维度
+            num_rotation_bins: 旋转bins数量
         """
         self.device = device
-        self.wan_type = wan_type
-        self.use_dual_head = use_dual_head
-        self.is_full_finetune = is_full_finetune
         self.torch_dtype = torch_dtype
-        self.lora_checkpoint = lora_checkpoint
-        self.rot_grip_checkpoint = rot_grip_checkpoint
-
-        # Rotation and gripper parameters
+        self.lora_checkpoint_path = lora_checkpoint_path
+        self.rot_grip_checkpoint_path = rot_grip_checkpoint_path
+        self.use_dual_head = use_dual_head
         self.rotation_resolution = rotation_resolution
         self.num_rotation_bins = num_rotation_bins
-        self.num_history_frames = num_history_frames
-        self.use_initial_gripper_state = use_initial_gripper_state
-        self.local_feat_size = local_feat_size
-        self.hidden_dim = hidden_dim
 
-        print("="*60)
-        print("Initializing MV View Inference with Rot/Grip Prediction")
-        print("="*60)
-        print(f"  Model base path: {model_base_path}")
-        print(f"  LoRA checkpoint: {lora_checkpoint}")
-        print(f"  Rot/Grip checkpoint: {rot_grip_checkpoint if rot_grip_checkpoint else '(Not provided)'}")
-        print(f"  WAN type: {wan_type}")
-        print(f"  Use dual head: {use_dual_head}")
-        print(f"  Is full finetune: {is_full_finetune}")
-        print(f"  Num history frames: {num_history_frames}")
-        print(f"  Rotation resolution: {rotation_resolution}°")
-        print(f"  Num rotation bins: {num_rotation_bins}")
-        print(f"  Hidden dim: {hidden_dim}")
-        print(f"  Local feat size: {local_feat_size}")
-        print(f"  Use initial gripper state: {use_initial_gripper_state}")
-        print("="*60)
+        print(f"Loading {wan_type} multi-view pipeline with rotation/gripper prediction...")
 
-        # Configuration consistency check
-        if num_history_frames > 1 and wan_type != "5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP_HISTORY":
-            raise ValueError(
-                f"Configuration mismatch!\n"
-                f"  num_history_frames={num_history_frames} (>1) requires wan_type='5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP_HISTORY'\n"
-                f"  but got wan_type='{wan_type}'\n"
-            )
-
-        # Import correct pipeline based on wan_type
+        # 加载diffusion pipeline
         if wan_type == "5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP":
-            from diffsynth.pipelines.wan_video_5B_TI2V_heatmap_and_rgb_mv_view import (
-                WanVideoPipeline,
-                ModelConfig
-            )
-            print("  Using single-frame pipeline: wan_video_5B_TI2V_heatmap_and_rgb_mv_view")
-        elif wan_type == "5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP_HISTORY":
-            from diffsynth.pipelines.wan_video_5B_TI2V_heatmap_and_rgb_mv_history import (
-                WanVideoPipeline,
-                ModelConfig
-            )
-            print("  Using multi-frame history pipeline: wan_video_5B_TI2V_heatmap_and_rgb_mv_history")
-        else:
-            raise ValueError(f"Unsupported wan_type: {wan_type}")
-
-        # Store pipeline class for later use
-        self.WanVideoPipeline = WanVideoPipeline
-        self.ModelConfig = ModelConfig
-
-        # Load pipeline
-        self.pipe = self._load_pipeline(model_base_path, lora_checkpoint)
-
-        # Load rotation and gripper predictor if checkpoint provided
-        if rot_grip_checkpoint and os.path.exists(rot_grip_checkpoint):
-            self._load_rot_grip_predictor(rot_grip_checkpoint)
-        else:
-            print("\nRotation/gripper predictor not loaded (checkpoint not provided or not found)")
-            print("  Inference will only generate heatmap and RGB videos without rot/grip predictions")
-            self.rot_grip_predictor = None
-
-    def _load_pipeline(self, model_base_path: str, lora_checkpoint: str):
-        """Load the pipeline with model and LoRA weights."""
-        # Model configs
-        model_configs = [
-            self.ModelConfig(
-                path=[
-                    f"{model_base_path}/diffusion_pytorch_model-00001-of-00003.safetensors",
-                    f"{model_base_path}/diffusion_pytorch_model-00002-of-00003.safetensors",
-                    f"{model_base_path}/diffusion_pytorch_model-00003-of-00003.safetensors",
+            self.pipe = WanVideoPipeline.from_pretrained(
+                torch_dtype=torch_dtype,
+                device=device,
+                wan_type=wan_type,
+                use_dual_head=use_dual_head,
+                model_configs=[
+                    ModelConfig(path=[
+                        f"{model_base_path}/diffusion_pytorch_model-00001-of-00003.safetensors",
+                        f"{model_base_path}/diffusion_pytorch_model-00002-of-00003.safetensors",
+                        f"{model_base_path}/diffusion_pytorch_model-00003-of-00003.safetensors"
+                    ]),
+                    ModelConfig(path=f"{model_base_path}/models_t5_umt5-xxl-enc-bf16.pth"),
+                    ModelConfig(path=f"{model_base_path}/Wan2.2_VAE.pth"),
                 ],
-            ),
-            self.ModelConfig(
-                path=f"{model_base_path}/models_t5_umt5-xxl-enc-bf16.pth",
-            ),
-            self.ModelConfig(
-                path=f"{model_base_path}/Wan2.2_VAE.pth",
-            ),
-        ]
-
-        print("\nStep 1: Loading base pipeline...")
-        pipe = self.WanVideoPipeline.from_pretrained(
-            torch_dtype=self.torch_dtype,
-            device=self.device,
-            model_configs=model_configs,
-            wan_type=self.wan_type,
-            use_dual_head=self.use_dual_head,
-        )
-
-        print("\nStep 2: Model loaded successfully (view-concat mode)")
-
-        # Add multi-view attention modules
-        print("\nStep 2.5: Adding multi-view attention modules...")
-        from diffsynth.models.wan_video_dit_mv_view import SelfAttention
-        dim = pipe.dit.blocks[0].self_attn.q.weight.shape[0]
-        model_dtype = pipe.dit.blocks[0].self_attn.q.weight.dtype
-        model_device = pipe.dit.blocks[0].self_attn.q.weight.device
-
-        for block in pipe.dit.blocks:
-            # Create projector
-            block.projector = torch.nn.Linear(dim, dim).to(dtype=model_dtype, device=model_device)
-            block.projector.weight.data.zero_()
-            block.projector.bias.data.zero_()
-
-            # Create norm_mvs
-            block.norm_mvs = torch.nn.LayerNorm(dim, eps=block.norm1.eps, elementwise_affine=False).to(dtype=model_dtype, device=model_device)
-
-            # Create modulation_mvs parameter
-            block.modulation_mvs = torch.nn.Parameter(torch.randn(1, 3, dim, dtype=model_dtype, device=model_device) / dim**0.5)
-            block.modulation_mvs.data = block.modulation.data[:, :3, :].clone()
-
-            # Create mvs_attn
-            block.mvs_attn = SelfAttention(dim, block.self_attn.num_heads, block.self_attn.norm_q.eps)
-            block.mvs_attn.load_state_dict(block.self_attn.state_dict(), strict=True)
-            block.mvs_attn = block.mvs_attn.to(dtype=model_dtype, device=model_device)
-
-        print("  Multi-view modules added successfully")
-
-        # Load checkpoint weights
-        print("\nStep 3: Loading checkpoint weights...")
-        if lora_checkpoint and os.path.exists(lora_checkpoint):
-            if self.is_full_finetune:
-                self._load_full_finetune_checkpoint(pipe, lora_checkpoint)
-            else:
-                self._load_lora_with_base_weights(pipe, lora_checkpoint)
+            )
         else:
-            print(f"  Warning: Checkpoint not found: {lora_checkpoint}")
+            raise ValueError(f"Unsupported wan_type: {wan_type}. Use '5B_TI2V_RGB_HEATMAP_MV_ROT_GRIP'")
 
-        # Set models to eval mode
-        print(f"\nStep 4: Setting models to eval mode on {self.device}...")
-        if pipe.dit is not None:
-            pipe.dit.eval()
-        if pipe.vae is not None:
-            pipe.vae.eval()
-        if pipe.text_encoder is not None:
-            pipe.text_encoder.eval()
+        # 初始化多视角模块
+        print("Initializing multi-view modules...")
+        self._initialize_mv_modules()
 
-        print("\nPipeline loaded successfully!")
-        return pipe
+        # 加载diffusion模型的LoRA权重
+        print(f"Loading diffusion LoRA checkpoint: {lora_checkpoint_path}")
+        self.load_lora_with_base_weights(lora_checkpoint_path, alpha=1.0)
 
-    def _load_rot_grip_predictor(self, checkpoint_path: str):
-        """Load rotation and gripper predictor model (View version using VAE latents)."""
-        print("\nLoading rotation and gripper predictor (View version)...")
-
-        # Import predictor model (View version, uses VAE latents directly)
-
-        # Initialize predictor
-        # View版本：6个views（3 RGB + 3 Heatmap），每个view 48通道latents
-        self.rot_grip_predictor = MultiViewRotationGripperPredictorView(
-            rgb_channels=48,  # VAE latent channels (not decoder intermediate!)
-            heatmap_channels=48,  # VAE latent channels (not decoder intermediate!)
-            hidden_dim=self.hidden_dim,
-            num_views=6,  # 6 views: 3 RGB + 3 Heatmap (view concat mode)
-            num_rotation_bins=self.num_rotation_bins,
+        # 初始化旋转和夹爪预测器（使用新的基于VAE decoder中间特征的模型）
+        print("Initializing rotation and gripper predictor (VAE decode feature version)...")
+        self.rot_grip_predictor = MultiViewRotationGripperPredictor(
+            rgb_channels=256,  # VAE decoder intermediate channels
+            heatmap_channels=256,  # VAE decoder intermediate channels
+            hidden_dim=hidden_dim,
+            num_views=3,
+            num_rotation_bins=num_rotation_bins,
             dropout=0.1,
-            vae=None,  # VAE object (optional, for decoding heatmaps to find peaks)
-            local_feature_size=self.local_feat_size,
-            use_initial_gripper_state=self.use_initial_gripper_state,
-        ).to(device=self.device, dtype=self.torch_dtype)
+            local_feature_size=5,  # 局部特征提取的邻域大小
+        ).to(device=device, dtype=torch_dtype)
 
-        # Load checkpoint
-        print(f"  Loading checkpoint: {checkpoint_path}")
+        # 加载支持decode_intermediate的VAE
+        print("Loading VAE with decode_intermediate support...")
+        from diffsynth.models.wan_video_vae_2 import WanVideoVAE38
+        self.vae_decode_intermediate = WanVideoVAE38()
+        # 加载权重
+        vae_state_dict = torch.load(f"{model_base_path}/Wan2.2_VAE.pth", map_location="cpu")
+        # 处理state_dict格式
+        if 'model_state' in vae_state_dict:
+            vae_state_dict = vae_state_dict['model_state']
+        # 添加'model.'前缀
+        vae_state_dict = {'model.' + k: v for k, v in vae_state_dict.items()}
+        self.vae_decode_intermediate.load_state_dict(vae_state_dict, strict=True)
+        self.vae_decode_intermediate = self.vae_decode_intermediate.eval().to(device=device, dtype=torch_dtype)
+        print("✓ VAE with decode_intermediate loaded")
+
+        # 加载旋转和夹爪预测器权重
+        print(f"Loading rotation/gripper predictor checkpoint: {rot_grip_checkpoint_path}")
+        self.load_rot_grip_checkpoint(rot_grip_checkpoint_path)
+
+        print("Pipeline initialized successfully!")
+
+    def _initialize_mv_modules(self):
+        """初始化多视角模块"""
+        from diffsynth.models.wan_video_dit_mv import SelfAttention
+
+        dim = self.pipe.dit.blocks[0].self_attn.q.weight.shape[0]
+
+        for block in self.pipe.dit.blocks:
+            block.projector = nn.Linear(dim, dim).to(device=self.device, dtype=self.torch_dtype)
+            block.projector.weight = nn.Parameter(torch.zeros(dim, dim, device=self.device, dtype=self.torch_dtype))
+            block.projector.bias = nn.Parameter(torch.zeros(dim, device=self.device, dtype=self.torch_dtype))
+            block.norm_mvs = nn.LayerNorm(dim, eps=block.norm1.eps, elementwise_affine=False).to(device=self.device, dtype=self.torch_dtype)
+            block.modulation_mvs = nn.Parameter(torch.randn(1, 3, dim, device=self.device, dtype=self.torch_dtype) / dim**0.5)
+            block.mvs_attn = SelfAttention(dim, block.self_attn.num_heads, block.self_attn.norm_q.eps).to(device=self.device, dtype=self.torch_dtype)
+            block.modulation_mvs.data = block.modulation.data[:, :3, :].clone()
+            block.mvs_attn.load_state_dict(block.self_attn.state_dict(), strict=True)
+
+        print("✓ Multi-view modules initialized")
+
+    def load_checkpoint_weights(self, checkpoint_path: str):
+        """
+        加载checkpoint中的所有训练权重（包括patch_embedding、head、MV模块的base layer等）
+
+        注意：此函数现在不仅加载patch_embedding和head，还包括多视角注意力相关的base layer权重
+        这些权重需要在应用LoRA之前加载，以确保LoRA变化量被正确地加到训练时的base layer上
+
+        关键点：checkpoint中的多视角注意力权重以 `base_layer` 命名（如 blocks.0.mvs_attn.k.base_layer.weight），
+        但模型中的参数名没有 `base_layer`（如 blocks.0.mvs_attn.k.weight），需要转换。
+
+        Args:
+            checkpoint_path: checkpoint文件路径
+        """
+        try:
+            # 加载checkpoint
+            print(f"  Loading state dict from: {checkpoint_path}")
+            state_dict = load_state_dict(checkpoint_path)
+
+            # 筛选需要的权重
+            patch_embedding_weights = {}
+            head_weights = {}
+            mv_base_layer_weights = {}  # mvs_attn 的 base_layer 权重
+            mv_other_weights = {}  # 其他 MV 相关权重（projector, norm_mvs, modulation_mvs）
+
+            for key, value in state_dict.items():
+                # 跳过LoRA相关的权重（但不跳过 base_layer）
+                if 'lora' in key.lower():
+                    continue
+
+                # 筛选patch_embedding相关的权重
+                if 'patch_embedding' in key or 'patch_embed' in key:
+                    patch_embedding_weights[key] = value
+
+                # 筛选head相关的权重（包括dual head）
+                elif any(pattern in key for pattern in ['head']):
+                    if 'attention' not in key.lower() and 'attn' not in key.lower():
+                        head_weights[key] = value
+
+                # 筛选MV模块的base_layer权重（需要转换键名）
+                elif 'base_layer' in key:
+                    # 这些是 mvs_attn 中经过 LoRA 训练的层的 base layer
+                    mv_base_layer_weights[key] = value
+
+                # 筛选MV模块的其他权重（projector, norm_mvs, modulation_mvs, mvs_attn中的norm等，不需要转换键名）
+                elif any(pattern in key for pattern in ['projector', 'norm_mvs', 'modulation_mvs', 'mvs_attn']):
+                    mv_other_weights[key] = value
+
+            print(f"  Found {len(patch_embedding_weights)} patch_embedding weights")
+            print(f"  Found {len(head_weights)} head weights")
+            print(f"  Found {len(mv_base_layer_weights)} MV module base_layer weights (need key conversion)")
+            print(f"  Found {len(mv_other_weights)} MV module other weights")
+
+            # 显示找到的权重key样例
+            if patch_embedding_weights:
+                print("  Patch embedding keys (sample):")
+                for key in list(patch_embedding_weights.keys())[:3]:
+                    print(f"    - {key}")
+
+            if head_weights:
+                print("  Head keys (sample):")
+                for key in list(head_weights.keys())[:3]:
+                    print(f"    - {key}")
+
+            if mv_base_layer_weights:
+                print("  MV base_layer keys (sample, before conversion):")
+                for key in list(mv_base_layer_weights.keys())[:5]:
+                    print(f"    - {key}")
+
+            if mv_other_weights:
+                print("  MV other weights keys (sample):")
+                for key in list(mv_other_weights.keys())[:5]:
+                    print(f"    - {key}")
+
+            # 合并要加载的权重
+            weights_to_load = {}
+            weights_to_load.update(patch_embedding_weights)
+            weights_to_load.update(head_weights)
+            weights_to_load.update(mv_other_weights)
+
+            # 转换 base_layer 键名：blocks.X.mvs_attn.Y.base_layer.weight -> blocks.X.mvs_attn.Y.weight
+            for key, value in mv_base_layer_weights.items():
+                # 移除 .base_layer
+                converted_key = key.replace('.base_layer.', '.')
+                weights_to_load[converted_key] = value
+
+            if not weights_to_load:
+                print("  Warning: No weights found in checkpoint")
+                return
+
+            # 显示转换后的键名样例
+            if mv_base_layer_weights:
+                print("  MV base_layer keys (sample, after conversion):")
+                converted_samples = [k.replace('.base_layer.', '.') for k in list(mv_base_layer_weights.keys())[:5]]
+                for key in converted_samples:
+                    print(f"    - {key}")
+
+            # 清理权重key（移除前缀）
+            weights_clean = {}
+            for key, value in weights_to_load.items():
+                # 移除可能的前缀: 'dit.', 'model.'
+                clean_key = key
+                for prefix in ['dit.', 'model.']:
+                    if clean_key.startswith(prefix):
+                        clean_key = clean_key[len(prefix):]
+                        break
+                weights_clean[clean_key] = value
+
+            print(f"  Loading {len(weights_clean)} weights into DIT model...")
+
+            # 加载到DIT模型中
+            missing_keys, unexpected_keys = self.pipe.dit.load_state_dict(
+                weights_clean, strict=False
+            )
+
+            # 统计成功加载的权重
+            loaded_keys = set(weights_clean.keys()) - set(unexpected_keys)
+
+            print(f"    ✓ Successfully loaded {len(loaded_keys)}/{len(weights_clean)} weights")
+
+            if missing_keys:
+                relevant_missing = [k for k in missing_keys if any(p in k for p in ['patch_embedding', 'head', 'projector', 'mvs_'])]
+                if relevant_missing:
+                    print(f"    Warning: {len(relevant_missing)} relevant keys not found in checkpoint:")
+                    for key in relevant_missing[:5]:
+                        print(f"      - {key}")
+
+            if unexpected_keys:
+                print(f"    Info: {len(unexpected_keys)} unexpected keys (sample):")
+                for key in unexpected_keys[:5]:
+                    print(f"      - {key}")
+
+            print("  ✓ All base layer weights loaded successfully!")
+
+        except Exception as e:
+            print(f"  Warning: Failed to load weights: {e}")
+            print("  Continuing with LoRA weights only...")
+            import traceback
+            traceback.print_exc()
+
+    def load_lora_with_base_weights(self, checkpoint_path: str, alpha: float = 1.0):
+        """
+        为多视角视频扩散模型定制的LoRA加载函数
+
+        关键区别：多视角注意力部分的LoRA base layer已经存储在checkpoint中，
+        因此需要先加载这些base layer，然后再应用LoRA变化量。
+
+        加载流程：
+        1. 先加载checkpoint中所有非LoRA的权重（base layer）
+        2. 然后加载LoRA权重，计算变化量并应用到对应的base layer上
+
+        这确保了LoRA变化量被正确地加到训练时的base layer上，
+        而不是加到推理时随机初始化的权重上。
+
+        Args:
+            checkpoint_path: checkpoint文件路径
+            alpha: LoRA的缩放因子
+        """
+        print("Loading checkpoint with custom LoRA logic for multiview model...")
+
+        # 步骤1：先加载所有base layer权重（包括多视角注意力模块）
+        print("\nStep 1: Loading base layer weights from checkpoint...")
+        self.load_checkpoint_weights(checkpoint_path)
+
+        # 步骤2：加载LoRA并应用到base layer上
+        print("\nStep 2: Loading and applying LoRA weights...")
+        self.pipe.load_lora(self.pipe.dit, checkpoint_path, alpha=alpha)
+
+        print("\n✓ Checkpoint loaded successfully with multiview-aware LoRA logic!")
+
+    def load_rot_grip_checkpoint(self, checkpoint_path: str):
+        """加载旋转和夹爪预测器的checkpoint"""
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
         if 'model_state_dict' in checkpoint:
@@ -365,291 +440,373 @@ class HeatmapInferenceMVRotGrip:
         else:
             state_dict = checkpoint
 
+        # 加载权重
         self.rot_grip_predictor.load_state_dict(state_dict, strict=True)
         self.rot_grip_predictor.eval()
 
-        # Verify checkpoint loaded
-        num_params = sum(p.numel() for p in self.rot_grip_predictor.parameters())
-        trainable_params = sum(p.numel() for p in self.rot_grip_predictor.parameters() if p.requires_grad)
-        print(f"  Rotation/gripper predictor loaded successfully!")
-        print(f"    Total parameters: {num_params:,}")
-        print(f"    Trainable parameters: {trainable_params:,}")
+        epoch_info = f" (epoch {checkpoint['epoch']})" if 'epoch' in checkpoint else ""
+        print(f"✓ Loaded rotation/gripper predictor{epoch_info}")
 
-        # Check if weights are reasonable (not all zeros or random)
-        sample_param = next(iter(self.rot_grip_predictor.parameters()))
-        print(f"    Sample weight stats: mean={sample_param.mean().item():.6f}, std={sample_param.std().item():.6f}")
-
-    def _verify_lora_loading(self, pipe, checkpoint_path: str, alpha: float = 1.0) -> bool:
+    def _visualize_input_images(self, input_image: List[Image.Image], input_image_rgb: List[Image.Image], prompt: str):
         """
-        Rigorously verify that LoRA weights were correctly loaded and applied.
+        可视化输入的多视角图像
+
+        Args:
+            input_image: List[PIL.Image] - 多视角热力图 (num_views,)
+            input_image_rgb: List[PIL.Image] - 多视角RGB图像 (num_views,)
+            prompt: 文本提示
+        """
+        import matplotlib.pyplot as plt
+        import os
+        from datetime import datetime
+
+        num_views = len(input_image)
+
+        # 创建保存目录
+        save_dir = os.path.join(os.path.dirname(__file__), "../../debug_input_visualization")
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 创建时间戳
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 创建图像网格：2行（heatmap和rgb）× num_views列
+        fig, axes = plt.subplots(2, num_views, figsize=(num_views * 4, 8))
+
+        # 确保axes是2D数组
+        if num_views == 1:
+            axes = axes.reshape(2, 1)
+
+        # 绘制热力图
+        for view_idx in range(num_views):
+            ax = axes[0, view_idx]
+            ax.imshow(input_image[view_idx])
+            ax.set_title(f"Heatmap View {view_idx}", fontsize=12, fontweight='bold')
+            ax.axis('off')
+
+        # 绘制RGB图像
+        for view_idx in range(num_views):
+            ax = axes[1, view_idx]
+            ax.imshow(input_image_rgb[view_idx])
+            ax.set_title(f"RGB View {view_idx}", fontsize=12, fontweight='bold')
+            ax.axis('off')
+
+        # 添加总标题
+        fig.suptitle(f"Input Images (Multi-View)\nPrompt: {prompt}",
+                     fontsize=14, fontweight='bold', y=0.98)
+
+        plt.tight_layout()
+
+        # 保存图像
+        save_path = os.path.join("/home/lpy/BridgeVLA_dev/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_results/debug_img/debug_input.png")
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        print(f"\n{'='*80}")
+        print(f"INPUT VISUALIZATION SAVED")
+        print(f"{'='*80}")
+        print(f"  Location: {save_path}")
+        print(f"  Prompt: {prompt}")
+        print(f"  Num Views: {num_views}")
+        print(f"  Heatmap size: {input_image[0].size}")
+        print(f"  RGB size: {input_image_rgb[0].size}")
+        print(f"{'='*80}\n")
+
+    def _visualize_generated_frames(self,
+                                     video_heatmap_frames: List[List[Image.Image]],
+                                     video_rgb_frames: List[List[Image.Image]],
+                                     save_path: str = None):
+        """
+        可视化生成的视频帧
+
+        Args:
+            video_heatmap_frames: List[List[PIL.Image]] (num_views, T) - 生成的热力图视频帧
+            video_rgb_frames: List[List[PIL.Image]] (num_views, T) - 生成的RGB视频帧
+            save_path: 保存路径（可选）
+        """
+        import matplotlib.pyplot as plt
+        import os
+        from datetime import datetime
+
+        num_views = len(video_heatmap_frames)
+        num_frames = len(video_heatmap_frames[0])
+
+        # 创建保存目录
+        if save_path is None:
+            save_dir = os.path.join(os.path.dirname(__file__), "../../debug_generated_visualization")
+            os.makedirs(save_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = os.path.join(save_dir, f"generated_frames_{timestamp}.png")
+        else:
+            save_dir = os.path.dirname(save_path)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+
+        # 创建图像网格：(num_views * 2)行（每个视角heatmap和rgb）× num_frames列
+        fig, axes = plt.subplots(num_views * 2, num_frames, figsize=(num_frames * 3, num_views * 2 * 3))
+
+        # 确保axes是2D数组
+        if num_views * 2 == 1 and num_frames == 1:
+            axes = np.array([[axes]])
+        elif num_views * 2 == 1:
+            axes = axes.reshape(1, -1)
+        elif num_frames == 1:
+            axes = axes.reshape(-1, 1)
+
+        # 绘制每个视角的帧
+        for view_idx in range(num_views):
+            # 热力图行
+            heatmap_row = view_idx * 2
+            for frame_idx in range(num_frames):
+                ax = axes[heatmap_row, frame_idx]
+                ax.imshow(video_heatmap_frames[view_idx][frame_idx])
+                if frame_idx == 0:
+                    ax.set_ylabel(f"View {view_idx}\nHeatmap", fontsize=10, fontweight='bold')
+                ax.set_title(f"T={frame_idx}", fontsize=10)
+                ax.axis('off')
+
+            # RGB行
+            rgb_row = view_idx * 2 + 1
+            for frame_idx in range(num_frames):
+                ax = axes[rgb_row, frame_idx]
+                ax.imshow(video_rgb_frames[view_idx][frame_idx])
+                if frame_idx == 0:
+                    ax.set_ylabel(f"View {view_idx}\nRGB", fontsize=10, fontweight='bold')
+                ax.axis('off')
+
+        # 添加总标题
+        fig.suptitle(f"Generated Video Frames\n({num_views} views × {num_frames} frames)",
+                     fontsize=14, fontweight='bold', y=1.02)
+
+        plt.tight_layout()
+
+        # 保存图像
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        print(f"\n{'='*80}")
+        print(f"GENERATED FRAMES VISUALIZATION SAVED")
+        print(f"{'='*80}")
+        print(f"  Location: {save_path}")
+        print(f"  Num Views: {num_views}")
+        print(f"  Num Frames: {num_frames}")
+        print(f"  Heatmap size: {video_heatmap_frames[0][0].size}")
+        print(f"  RGB size: {video_rgb_frames[0][0].size}")
+        print(f"{'='*80}\n")
+
+    @torch.no_grad()
+    def predict(self,
+                prompt: str,
+                input_image: List[Image.Image],  # 多视角起始图像 List[PIL.Image] (num_views,)
+                input_image_rgb: List[Image.Image],  # 多视角起始RGB图像
+                initial_rotation: np.ndarray,  # (3,) - [roll, pitch, yaw] in degrees
+                initial_gripper: int,  # 0 or 1
+                num_frames: int = 5,
+                height: int = 256,
+                width: int = 256,
+                num_inference_steps: int = 50,
+                cfg_scale: float = 1.0,
+                seed: int = 0,
+                visualize: bool = False,
+                visualize_save_path: str ="/home/lpy/BridgeVLA_dev/Wan/DiffSynth-Studio/examples/wanvideo/model_inference/heatmap_inference_results/debug_img/debug_output.png" ,
+                **kwargs) -> Dict[str, Any]:
+        """
+        执行推理，生成视频序列并预测旋转和夹爪状态
+
+        Args:
+            prompt: 文本提示
+            input_image: 多视角热力图起始图像 [view0, view1, view2]
+            input_image_rgb: 多视角RGB起始图像 [view0, view1, view2]
+            initial_rotation: 初始旋转角度 [roll, pitch, yaw] (度)
+            initial_gripper: 初始夹爪状态 (0=close, 1=open)
+            num_frames: 生成帧数 (包括初始帧)
+            height, width: 图像尺寸
+            num_inference_steps: 推理步数
+            cfg_scale: CFG引导强度
+            seed: 随机种子
+            visualize: 是否可视化生成的视频帧
+            visualize_save_path: 可视化图像保存路径（可选）
 
         Returns:
-            bool: True if LoRA was correctly loaded, False otherwise
+            字典包含:
+                - video_frames: 生成的视频帧 List[List[PIL.Image]] (T, num_views)
+                - video_rgb_frames: 生成的RGB视频帧 List[List[PIL.Image]] (T, num_views)
+                - rotation_predictions: 旋转预测 (T-1, 3) - [roll, pitch, yaw] in degrees
+                - gripper_predictions: 夹爪预测 (T-1,) - 0 or 1
+                - rotation_logits: 旋转logits (T-1, num_bins, 3)
+                - gripper_logits: 夹爪logits (T-1, 2)
         """
-        print("\n  === LoRA Loading Verification ===")
+        # 0. 可视化输入图像（多视角）
+        # self._visualize_input_images(input_image, input_image_rgb, prompt)
 
-        # Step 1: Check if LoRA weights exist in checkpoint
-        print("  [1/5] Checking LoRA weights in checkpoint...")
-        try:
-            state_dict = load_state_dict(checkpoint_path)
-        except Exception as e:
-            print(f"    ✗ FAILED: Cannot load checkpoint: {e}")
-            return False
+        # 1. 生成视频序列 (使用diffusion model)
+        print("Generating video sequence with diffusion model...")
 
-        lora_keys = [k for k in state_dict.keys() if 'lora' in k.lower()]
-        lora_up_keys = [k for k in lora_keys if 'lora_up' in k or 'lora_A' in k or 'lora.up' in k]
-        lora_down_keys = [k for k in lora_keys if 'lora_down' in k or 'lora_B' in k or 'lora.down' in k]
+        output = self.pipe(
+            prompt=prompt,
+            input_image=input_image,
+            input_image_rgb=input_image_rgb,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            num_inference_steps=num_inference_steps,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            use_dual_head=self.use_dual_head,
+            **kwargs
+        )
 
-        if not lora_keys:
-            print(f"    ✗ FAILED: No LoRA weights found in checkpoint")
-            return False
+        # Pipeline现在返回字典，包含video和latents
+        video_heatmap_frames = output['video_heatmap']  # List[List[PIL.Image]] (num_views,T)
+        video_rgb_frames = output['video_rgb']  # List[List[PIL.Image]] (num_views,T)
+        rgb_latents = output['rgb_latents']  # (num_views, c_rgb, t, h, w)
+        heatmap_latents = output['heatmap_latents']  # (num_views, c_hm, t, h, w)
 
-        print(f"    ✓ Found {len(lora_keys)} LoRA keys in checkpoint")
-        print(f"      - LoRA up/A keys: {len(lora_up_keys)}")
-        print(f"      - LoRA down/B keys: {len(lora_down_keys)}")
+        # FIX: Pipeline内部已经除以了heatmap_latent_scale（wan_video_5B_TI2V_heatmap_and_rgb_mv_rot_grip.py:917）
+        # 但训练时是乘以scale的，所以推理时需要乘回来以匹配训练分布
+        HEATMAP_LATENT_SCALE = 1.0  # 应该与训练时的参数一致
+        if HEATMAP_LATENT_SCALE != 1.0:
+            heatmap_latents = heatmap_latents * HEATMAP_LATENT_SCALE
+            print(f"  [INFO] Applied heatmap_latent_scale={HEATMAP_LATENT_SCALE} to denoised latents")
 
-        # Step 2: Check if LoRA modules exist in model
-        print("\n  [2/5] Checking LoRA modules in model...")
-        lora_modules_in_model = []
-        for name, module in pipe.dit.named_modules():
-            if hasattr(module, 'lora_up') or hasattr(module, 'lora_down') or \
-               hasattr(module, 'lora_A') or hasattr(module, 'lora_B'):
-                lora_modules_in_model.append(name)
+        # 2. 使用VAE decode_intermediate获取中间特征（新模型需要256通道的decoder中间特征）
+        num_views = rgb_latents.shape[0]
 
-        if not lora_modules_in_model:
-            print(f"    ✗ FAILED: No LoRA modules found in model")
-            print(f"      Model may not have LoRA support injected")
-            return False
+        # 对每个视角分别decode_intermediate
+        all_rgb_intermediate = []
+        all_heatmap_intermediate = []
+        all_heatmap_images = []
 
-        print(f"    ✓ Found {len(lora_modules_in_model)} LoRA modules in model")
-        print(f"      Sample modules: {lora_modules_in_model[:3]}")
+        for view_idx in range(num_views):
+            view_rgb_latent = rgb_latents[view_idx:view_idx+1]  # (1, c, t, h, w)
+            view_heatmap_latent = heatmap_latents[view_idx:view_idx+1]
 
-        # Step 3: Verify LoRA parameters are not zero
-        print("\n  [3/5] Checking LoRA parameter values...")
-        lora_params_checked = 0
-        zero_params = 0
-        non_zero_params = 0
-
-        for name, module in pipe.dit.named_modules():
-            for lora_attr in ['lora_up', 'lora_down', 'lora_A', 'lora_B']:
-                if hasattr(module, lora_attr):
-                    lora_param = getattr(module, lora_attr)
-                    if hasattr(lora_param, 'weight'):
-                        param_data = lora_param.weight.data
-                        lora_params_checked += 1
-
-                        if param_data.abs().sum().item() < 1e-8:
-                            zero_params += 1
-                        else:
-                            non_zero_params += 1
-
-        if lora_params_checked == 0:
-            print(f"    ✗ FAILED: No LoRA parameters found to check")
-            return False
-
-        print(f"    ✓ Checked {lora_params_checked} LoRA parameters")
-        print(f"      - Non-zero parameters: {non_zero_params}")
-        print(f"      - Zero parameters: {zero_params}")
-
-        if non_zero_params == 0:
-            print(f"    ✗ WARNING: All LoRA parameters are zero!")
-            return False
-
-        # Step 4: Compute LoRA contribution to model
-        print("\n  [4/5] Computing LoRA contribution magnitude...")
-        total_lora_magnitude = 0.0
-        lora_contributions = []
-
-        for name, module in pipe.dit.named_modules():
-            if hasattr(module, 'lora_up') and hasattr(module, 'lora_down'):
-                # Compute LoRA contribution: alpha * (up @ down)
-                up_weight = module.lora_up.weight.data
-                down_weight = module.lora_down.weight.data
-
-                # LoRA contribution magnitude
-                contribution = (up_weight.abs().mean() * down_weight.abs().mean()).item()
-                lora_contributions.append(contribution)
-                total_lora_magnitude += contribution
-            elif hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
-                up_weight = module.lora_A.weight.data
-                down_weight = module.lora_B.weight.data
-                contribution = (up_weight.abs().mean() * down_weight.abs().mean()).item()
-                lora_contributions.append(contribution)
-                total_lora_magnitude += contribution
-
-        if len(lora_contributions) == 0:
-            print(f"    ✗ FAILED: Cannot compute LoRA contributions")
-            return False
-
-        avg_contribution = total_lora_magnitude / len(lora_contributions)
-        max_contribution = max(lora_contributions)
-        min_contribution = min(lora_contributions)
-
-        print(f"    ✓ LoRA contribution statistics:")
-        print(f"      - Average magnitude: {avg_contribution:.6e}")
-        print(f"      - Max magnitude: {max_contribution:.6e}")
-        print(f"      - Min magnitude: {min_contribution:.6e}")
-        print(f"      - Alpha scaling: {alpha}")
-
-        # Step 5: Verify alpha scaling
-        print("\n  [5/5] Verifying alpha scaling...")
-        if hasattr(pipe, 'lora_alpha') or hasattr(pipe.dit, 'lora_alpha'):
-            print(f"    ✓ LoRA alpha is set in model")
-
-        # Final verdict
-        print("\n  === Verification Result ===")
-        if non_zero_params > 0 and avg_contribution > 1e-8:
-            print(f"  ✓ PASSED: LoRA weights are correctly loaded and applied")
-            print(f"    - {len(lora_modules_in_model)} modules with LoRA")
-            print(f"    - {non_zero_params}/{lora_params_checked} non-zero parameters")
-            print(f"    - Average contribution: {avg_contribution:.6e}")
-            return True
-        else:
-            print(f"  ✗ FAILED: LoRA loading verification failed")
-            print(f"    Please check:")
-            print(f"      1. Checkpoint contains valid LoRA weights")
-            print(f"      2. LoRA keys match model architecture")
-            print(f"      3. Alpha value is not zero")
-            return False
-
-    def _load_checkpoint_weights(self, pipe, checkpoint_path: str):
-        """Load non-LoRA weights from checkpoint."""
-        try:
-            print(f"  Loading state dict from: {checkpoint_path}")
-            state_dict = load_state_dict(checkpoint_path)
-
-            # Categorize weights
-            head_weights = {}
-            patch_embedding_weights = {}
-            modulation_weights = {}
-            mvs_weights = {}
-
-            for key, value in state_dict.items():
-                if 'lora' in key.lower():
-                    continue
-
-                if any(pattern in key for pattern in ['head_rgb', 'head_heatmap', 'head.']):
-                    if 'attention' not in key.lower() and 'attn' not in key.lower():
-                        head_weights[key] = value
-                elif 'patch_embedding' in key or 'patch_embed' in key:
-                    patch_embedding_weights[key] = value
-                elif 'modulation' in key and 'mvs' not in key:
-                    modulation_weights[key] = value
-                elif any(pattern in key for pattern in ['mvs_attn', 'norm_mvs', 'projector', 'modulation_mvs']):
-                    mvs_weights[key] = value
-                else:
-                    assert False
-
-            print(f"  Found {len(head_weights)} head weights")
-            print(f"  Found {len(patch_embedding_weights)} patch_embedding weights")
-            print(f"  Found {len(modulation_weights)} modulation weights")
-            print(f"  Found {len(mvs_weights)} multi-view module weights")
-
-            # Merge all weights
-            weights_to_load = {}
-            weights_to_load.update(head_weights)
-            weights_to_load.update(patch_embedding_weights)
-            weights_to_load.update(modulation_weights)
-            weights_to_load.update(mvs_weights)
-
-            if not weights_to_load:
-                print("  Warning: No non-LoRA weights found in checkpoint")
-                return
-
-            # Clean weight keys
-            weights_clean = {}
-            for key, value in weights_to_load.items():
-                clean_key = key
-                for prefix in ['dit.', 'model.']:
-                    if clean_key.startswith(prefix):
-                        clean_key = clean_key[len(prefix):]
-                        break
-                weights_clean[clean_key] = value
-
-            print(f"  Loading {len(weights_clean)} non-LoRA weights into DIT model...")
-
-            # Load into DIT model
-            missing_keys, unexpected_keys = pipe.dit.load_state_dict(
-                weights_clean, strict=False
+            # RGB: 只需要中间特征
+            rgb_intermediate = self.vae_decode_intermediate.decode_intermediate(
+                [view_rgb_latent.squeeze(0)], device=self.device
             )
+            all_rgb_intermediate.append(rgb_intermediate[0])
 
-            loaded_keys = set(weights_clean.keys()) - set(unexpected_keys)
-            print(f"    Successfully loaded {len(loaded_keys)}/{len(weights_clean)} weights")
-
-            print("  Non-LoRA weights loaded successfully!")
-
-        except Exception as e:
-            print(f"  Warning: Failed to load non-LoRA weights: {e}")
-
-    def _load_lora_with_base_weights(self, pipe, checkpoint_path: str, alpha: float = 1.0):
-        """Load LoRA checkpoint: base weights first, then apply LoRA."""
-        print("  Loading checkpoint with LoRA logic...")
-
-        # Step 1: Load non-LoRA weights
-        print("\n  Step 3.1: Loading non-LoRA weights...")
-        self._load_checkpoint_weights(pipe, checkpoint_path)
-
-        # Step 2: Load LoRA weights
-        print("\n  Step 3.2: Loading and applying LoRA weights...")
-        pipe.load_lora(pipe.dit, checkpoint_path, alpha=alpha)
-        print("    LoRA weights loaded and applied")
-
-        # # Step 3: Verify LoRA loading
-        # print("\n  Step 3.3: Verifying LoRA loading...")
-        # verification_passed = self._verify_lora_loading(pipe, checkpoint_path, alpha=alpha)
-        # if not verification_passed:
-        #     raise RuntimeError(
-        #         "LoRA verification failed! Please check:\n"
-        #         "  1. Checkpoint file contains valid LoRA weights\n"
-        #         "  2. LoRA keys match model architecture\n"
-        #         "  3. Alpha value is correctly set\n"
-        #         "  4. Model has LoRA support properly injected"
-        #     )
-
-        print("\n  Checkpoint loaded successfully!")
-
-    def _load_full_finetune_checkpoint(self, pipe, checkpoint_path: str):
-        """Load full finetune checkpoint."""
-        try:
-            print(f"  Loading full finetune checkpoint: {checkpoint_path}")
-            state_dict = load_state_dict(checkpoint_path)
-            print(f"    Loaded {len(state_dict)} keys from checkpoint")
-
-            # Filter DIT weights
-            dit_weights = {}
-            lora_keys_count = 0
-            for key, value in state_dict.items():
-                if 'lora' in key.lower():
-                    lora_keys_count += 1
-                    continue
-                dit_weights[key] = value
-
-            print(f"    Filtered {len(dit_weights)} DIT weights (skipped {lora_keys_count} LoRA keys)")
-
-            # Clean weight keys
-            weights_clean = {}
-            for key, value in dit_weights.items():
-                clean_key = key
-                for prefix in ['dit.', 'model.']:
-                    if clean_key.startswith(prefix):
-                        clean_key = clean_key[len(prefix):]
-                        break
-                weights_clean[clean_key] = value
-
-            # Load into DIT model
-            missing_keys, unexpected_keys = pipe.dit.load_state_dict(
-                weights_clean, strict=False
+            # Heatmap: 需要中间特征和完全解码的图像（用于找峰值）
+            heatmap_intermediate, heatmap_full = self.vae_decode_intermediate.decode_intermediate_with_full(
+                [view_heatmap_latent.squeeze(0)], device=self.device
             )
+            all_heatmap_intermediate.append(heatmap_intermediate[0])
+            all_heatmap_images.append(heatmap_full[0])
 
-            loaded_count = len(weights_clean) - len(unexpected_keys)
-            print(f"    Successfully loaded {loaded_count}/{len(weights_clean)} weights")
+        # 合并所有视角: List[(c, t, h, w)] -> (num_views, c, t, h, w)
+        rgb_features = torch.stack(all_rgb_intermediate, dim=0)
+        heatmap_features = torch.stack(all_heatmap_intermediate, dim=0)
+        heatmap_images = torch.stack(all_heatmap_images, dim=0)  # (num_views, 3, t, H, W)
 
-            print("  Full finetune checkpoint loaded successfully!")
+        # 添加batch维度: (num_views, c, t, h, w) -> (1, num_views, c, t, h, w)
+        rgb_features = rgb_features.unsqueeze(0)
+        heatmap_features = heatmap_features.unsqueeze(0)
+        heatmap_images = heatmap_images.unsqueeze(0)  # (1, num_views, 3, t, H, W)
 
-        except Exception as e:
-            print(f"  Error: Failed to load full finetune checkpoint: {e}")
-            raise
-        
+        # 3. 预测旋转和夹爪状态（新模型不需要initial_rotation和initial_gripper输入）
+        self.rot_grip_predictor.eval()
+
+        num_future_frames = num_frames - 1
+        rotation_logits, gripper_logits = self.rot_grip_predictor(
+            rgb_features=rgb_features,
+            heatmap_features=heatmap_features,
+            num_future_frames=num_future_frames,
+            heatmap_images=heatmap_images,
+            colormap_name='jet',
+        )
+
+        # 4. 解码预测结果（预测的是delta值）
+        # rotation_logits: (1, T-1, num_bins*3) -> (T-1, 3, num_bins)
+        rotation_logits = rotation_logits[0].view(num_future_frames, 3, self.num_rotation_bins)
+
+        # gripper_logits: (1, T-1, 2) -> (T-1, 2)
+        gripper_logits = gripper_logits[0]
+
+        # 获取预测的离散索引（delta值）
+        rotation_delta_bins = rotation_logits.argmax(dim=-1)  # (T-1, 3)
+        gripper_predictions = gripper_logits.argmax(dim=1)  # (T-1,) - 21class [-1, 1]
+
+        gripper_predictions = gripper_predictions.float() * 0.1 - 1.0
+        gripper_predictions = gripper_predictions.cpu().numpy()
+        # print(f"gripper_predictions: {gripper_predictions}")
+
+        # 5. 将delta值转换为绝对值
+        # rotation delta: bins表示变化量，需要加到初始值上
+        rotation_delta_degrees = self._delta_bins_to_degrees(rotation_delta_bins.cpu().numpy())  # (T-1, 3)
+
+        # 注意：训练时delta是基于连续的initial_rotation计算的，所以推理时也应该直接使用连续值
+        # 不要对initial_rotation进行离散化再转回来，这会引入不必要的量化误差
+        initial_rotation_degrees = initial_rotation  # 直接使用连续值 (3,)
+
+        # 计算累积rotation: 每帧相对于第一帧的rotation
+        rotation_predictions = initial_rotation_degrees + rotation_delta_degrees  # (T-1, 3)
+        # 归一化到 [-180, 180]
+        rotation_predictions = ((rotation_predictions + 180) % 360) - 180
+
+
+
+        # 6. 可视化生成的视频帧
+        if visualize:
+            self._visualize_generated_frames(
+                video_heatmap_frames,
+                video_rgb_frames,
+                save_path=visualize_save_path
+            )
+        # a=input("begin to send the predicted action?")
+        return {
+            'video_heatmap': video_heatmap_frames,
+            'video_rgb': video_rgb_frames,
+            'rotation_predictions': rotation_predictions,
+            'gripper_predictions': gripper_predictions,
+            'rotation_logits': rotation_logits.float().cpu().numpy(),
+            'gripper_logits': gripper_logits.float().cpu().numpy(),
+        }
+
+    def _discretize_rotation(self, rotation_degrees: np.ndarray) -> np.ndarray:
+        """
+        将连续的旋转角度离散化为bins
+
+        Args:
+            rotation_degrees: (3,) - [roll, pitch, yaw] in degrees [-180, 180]
+
+        Returns:
+            rotation_bins: (3,) - bin indices
+        """
+        # 将范围从[-180, 180]转换为[0, 360]
+        rotation_shifted = rotation_degrees + 180
+
+        # 离散化
+        rotation_bins = np.around(rotation_shifted / self.rotation_resolution).astype(np.int64)
+
+        # 处理边界情况：360度 = 0度
+        rotation_bins[rotation_bins == self.num_rotation_bins] = 0
+
+        return rotation_bins
+
+    def _degrees_to_bins(self, rotation_degrees: np.ndarray) -> np.ndarray:
+        """
+        将角度转换为离散的bins（与训练代码一致）
+
+        Args:
+            rotation_degrees: (..., 3) - [roll, pitch, yaw] in degrees [-180, 180]
+
+        Returns:
+            rotation_bins: (..., 3) - bin indices [0, num_rotation_bins)
+        """
+        # 转换到 [0, 360] 范围
+        rotation_degrees_shifted = rotation_degrees + 180
+
+        # 使用四舍五入转换为bins（与训练代码保持一致）
+        rotation_bins = np.around(rotation_degrees_shifted / self.rotation_resolution).astype(np.int64)
+
+        # 处理边界情况：360度 = 0度（与训练代码一致）
+        rotation_bins[rotation_bins == self.num_rotation_bins] = 0
+
+        # 确保在有效范围内
+        rotation_bins = np.clip(rotation_bins, 0, self.num_rotation_bins - 1)
+
+        return rotation_bins
+
     def _bins_to_degrees(self, rotation_bins: np.ndarray) -> np.ndarray:
         """
         将离散的bins转换回角度（返回bin的中心值）
@@ -672,203 +829,70 @@ class HeatmapInferenceMVRotGrip:
 
     def _delta_bins_to_degrees(self, delta_bins: np.ndarray) -> np.ndarray:
         """
-        Convert delta rotation bins to delta degrees.
+        将delta bins转换回角度变化量
+
+        新模型预测的是相对于第一帧的rotation变化量（delta）
+        delta bins的范围是 [0, num_rotation_bins)，其中：
+        - bin 0 表示 -180度变化
+        - bin num_rotation_bins//2 表示 0度变化（无变化）
+        - bin num_rotation_bins-1 表示接近 +180度变化
 
         Args:
-            delta_bins: (T, 3) or (3,) - delta bin indices
+            delta_bins: (T, 3) - delta bin indices [0, num_rotation_bins)
 
         Returns:
-            delta_degrees: (T, 3) or (3,) - delta rotation in degrees
+            delta_degrees: (T, 3) - rotation change in degrees [-180, 180)
         """
-        # Delta bins are centered at num_bins/2
-        # bins < num_bins/2 => negative delta
-        # bins > num_bins/2 => positive delta
-        center_bin = self.num_rotation_bins // 2
-        delta_degrees = (delta_bins - center_bin) * self.rotation_resolution
+        # delta bins 的含义与绝对值bins相同，都是映射到 [-180, 180] 范围
+        # bin 0 -> -180度, bin num_bins//2 -> 0度, bin num_bins-1 -> 175度
+        delta_degrees = delta_bins * self.rotation_resolution - 180
+
         return delta_degrees
 
-    @torch.no_grad()
-    def run_inference(
-        self,
-        input_image: List[Image.Image],  # [num_views] list of heatmap PIL Images
-        input_image_rgb: List[Image.Image],  # [num_views] list of RGB PIL Images
-        prompt: str = "robot arm manipulation",
-        initial_rotation: Optional[np.ndarray] = None,  # (3,) - [roll, pitch, yaw] in degrees
-        initial_gripper: Optional[int] = None,  # 0 or 1
-        num_frames: int = 25,
-        height: int = 256,
-        width: int = 256,
-        num_inference_steps: int = 50,
-        cfg_scale: float = 1.0,
-        seed: int = 0,
-    ) -> Dict[str, Any]:
+    def find_peak_position(self, heatmap_image: Image.Image, colormap_name: str = 'jet') -> Tuple[int, int]:
         """
-        Run inference with rotation and gripper prediction.
+        在热力图中找到峰值位置
 
         Args:
-            input_image: List of input heatmap images for each view
-            input_image_rgb: List of input RGB images for each view
-            prompt: Text prompt
-            initial_rotation: Initial rotation [roll, pitch, yaw] in degrees (for rot/grip prediction)
-            initial_gripper: Initial gripper state 0=closed, 1=open (for rot/grip prediction)
-            num_frames: Number of output frames
-            height: Output height
-            width: Output width
-            num_inference_steps: Number of denoising steps
-            cfg_scale: Classifier-free guidance scale
-            seed: Random seed
+            heatmap_image: 热力图图像 (PIL.Image)
+            colormap_name: 使用的colormap名称
 
         Returns:
-            Dictionary containing:
-                - video_heatmap: Generated heatmap videos
-                - video_rgb: Generated RGB videos
-                - rotation_predictions: (T-1, 3) rotation predictions (if rot/grip enabled)
-                - gripper_predictions: (T-1,) gripper predictions (if rot/grip enabled)
+            peak_position: (x, y) 峰值位置
         """
-        import time
-        print(f"\nRunning inference with {len(input_image)} views...")
-        print(f"  Prompt: {prompt}")
-        print(f"  Frames: {num_frames}, Size: {height}x{width}")
-        print(f"  Steps: {num_inference_steps}, CFG: {cfg_scale}, Seed: {seed}")
-
-        start_time = time.time()
-
-        # Run pipeline to generate videos
-        output = self.pipe(
-            prompt=prompt,
-            input_image=input_image,
-            input_image_rgb=input_image_rgb,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            num_inference_steps=num_inference_steps,
-            cfg_scale=cfg_scale,
-            use_dual_head=self.use_dual_head,
-            seed=seed,
-        )
-
-        elapsed_time = time.time() - start_time
-        print(f"\nVideo generation completed in {elapsed_time:.2f}s")
-
-        result = {
-            'video_heatmap': output['video_heatmap'],
-            'video_rgb': output['video_rgb'],
-        }
-
-        # If rotation/gripper predictor is available, run prediction
-        if self.rot_grip_predictor is not None and initial_rotation is not None and initial_gripper is not None:
-            print("\nRunning rotation and gripper prediction...")
-
-            # Get latents from pipeline output
-            rgb_latents = output.get('rgb_latents')  # (num_views, c, t, h, w)
-            heatmap_latents = output.get('heatmap_latents')  # (num_views, c, t, h, w)
-
-            if rgb_latents is not None and heatmap_latents is not None:
-                print(f"  RGB latents shape: {rgb_latents.shape}")
-                print(f"  Heatmap latents shape: {heatmap_latents.shape}")
-
-                # Prepare latents for predictor
-                # Predictor expects: (b, 3, 48, t_compressed, h, w)
-                b = 1
-                rgb_latents_batched = rgb_latents.unsqueeze(0)  # (1, num_views, c, t, h, w)
-                heatmap_latents_batched = heatmap_latents.unsqueeze(0)
-
-                # Prepare heatmap images from video output
-                # video_heatmap is a list of 3 videos, each video is a list of PIL Images
-                heatmap_videos = output['video_heatmap']  # List of 3 videos
-                # Stack and convert to tensor: (3, T, C, H, W) -> (1, 3, T, C, H, W)
-                heatmap_images_list = []
-                for video in heatmap_videos:
-                    # video is a list of PIL Images (one per frame)
-                    frame_tensors = []
-                    for pil_image in video:
-                        # Convert PIL Image to tensor: (H, W, C) -> (C, H, W)
-                        frame_np = np.array(pil_image).astype(np.float32) / 255.0  # Normalize to [0, 1]
-                        frame_tensor = torch.from_numpy(frame_np).permute(2, 0, 1)  # (C, H, W)
-                        frame_tensors.append(frame_tensor)
-                    video_tensor = torch.stack(frame_tensors, dim=0)  # (T, C, H, W)
-                    heatmap_images_list.append(video_tensor)
-                heatmap_images = torch.stack(heatmap_images_list, dim=0)  # (3, T, C, H, W)
-                heatmap_images = heatmap_images.unsqueeze(0).to(self.device)  # (1, 3, T, C, H, W)
-
-                print(f"  Heatmap images shape: {heatmap_images.shape}")
-
-                # Calculate num_future_frames
-                num_future_frames = num_frames - self.num_history_frames
-
-                # Prepare history_gripper_states if needed
-                history_gripper_states = None
-                if self.use_initial_gripper_state and initial_gripper is not None:
-                    history_gripper_states = torch.full(
-                        (1, self.num_history_frames),
-                        initial_gripper,
-                        dtype=torch.long,
-                        device=self.device
-                    )
-
-                # Run predictor
-                rotation_logits, gripper_logits = self.rot_grip_predictor(
-                    rgb_latents=rgb_latents_batched,
-                    heatmap_latents=heatmap_latents_batched,
-                    num_future_frames=num_future_frames,
-                    heatmap_images=heatmap_images,  # Use actual heatmap images
-                    peak_positions=None,
-                    colormap_name='jet',
-                    num_history_frames=self.num_history_frames,
-                    history_gripper_states=history_gripper_states,
-                )
-
-                # Decode predictions
-                rotation_logits = rotation_logits[0].view(num_future_frames, 3, self.num_rotation_bins)
-                gripper_logits = gripper_logits[0]
-
-                print(f"  Rotation logits shape: {rotation_logits.shape}")
-                print(f"  Gripper logits shape: {gripper_logits.shape}")
-                print(f"  Expected num_future_frames: {num_future_frames}")
-
-                rotation_delta_bins = rotation_logits.argmax(dim=-1)  # (T, 3)
-                gripper_change = gripper_logits.argmax(dim=1)  # (T,)            
-                gripper_predictions = gripper_change.float() * 0.1 - 1.0
-                print(gripper_change, gripper_predictions)
-                gripper_predictions = gripper_predictions.cpu().numpy()
-
-                print(f"  Gripper change predictions: {gripper_change.cpu().numpy()}")
-                print(f"  Initial gripper state: {initial_gripper}")
-
-                # Convert to absolute values
-                rotation_delta_degrees = self._delta_bins_to_degrees(rotation_delta_bins.cpu().numpy())
-                rotation_predictions = initial_rotation + rotation_delta_degrees
-                rotation_predictions = ((rotation_predictions + 180) % 360) - 180
-
-                result['rotation_predictions'] = rotation_predictions
-                result['gripper_predictions'] = gripper_predictions
-
-                print(f"  Rotation/gripper prediction completed")
-                print(f"  First 3 rotation predictions: {rotation_predictions[:3]}")
-                print(f"  First 3 gripper predictions: {gripper_predictions[:3]}")
-            else:
-                print("  Warning: Latents not available in pipeline output, skipping rot/grip prediction")
-        elif self.rot_grip_predictor is None:
-            print("\nRotation/gripper prediction skipped (predictor not loaded)")
-        else:
-            print("\nRotation/gripper prediction skipped (initial_rotation or initial_gripper not provided)")
-
-        return result
-
-    # Alias for backward compatibility with Server code
-    def predict(self, *args, **kwargs) -> Dict[str, Any]:
-        """Alias for run_inference to maintain backward compatibility with Server."""
-        return self.run_inference(*args, **kwargs)
-
-    def find_peak_position(self, heatmap_image: Image.Image, colormap_name: str = 'jet') -> Tuple[int, int]:
-        """Find peak position in heatmap."""
+        from diffsynth.trainers.heatmap_utils import extract_heatmap_from_colormap
+        # 将PIL Image转换为numpy数组并归一化到[0,1]
         heatmap_image_np = np.array(heatmap_image).astype(np.float32) / 255.0
         heatmap_array = extract_heatmap_from_colormap(heatmap_image_np, colormap_name)
         max_pos = np.unravel_index(np.argmax(heatmap_array), heatmap_array.shape)
         return (max_pos[1], max_pos[0])  # (x, y) format
 
+    def calculate_peak_distance(self, pred_peak: Tuple[int, int], gt_peak: Tuple[int, int]) -> float:
+        """
+        计算两个峰值之间的欧氏距离
+
+        Args:
+            pred_peak: 预测的峰值位置 (x, y)
+            gt_peak: ground truth峰值位置 (x, y)
+
+        Returns:
+            distance: 欧氏距离 (像素)
+        """
+        return np.sqrt((pred_peak[0] - gt_peak[0])**2 + (pred_peak[1] - gt_peak[1])**2)
+
     def find_peaks_batch(self, heatmap_images: List[List[Image.Image]], colormap_name: str = 'jet') -> List[List[Tuple[int, int]]]:
-        """Batch find peak positions."""
+        """
+        批量计算多个热力图的峰值位置（优化速度）
+
+        Args:
+            heatmap_images: List[List[PIL.Image]] (T, num_views) - 热力图图像
+            colormap_name: 使用的colormap名称
+
+        Returns:
+            peaks: List[List[Tuple[int, int]]] (T, num_views) - 峰值位置列表
+        """
+        from diffsynth.trainers.heatmap_utils import extract_heatmap_from_colormap
+
         num_frames = len(heatmap_images)
         num_views = len(heatmap_images[0])
 
@@ -876,55 +900,232 @@ class HeatmapInferenceMVRotGrip:
         for frame_idx in range(num_frames):
             frame_peaks = []
             for view_idx in range(num_views):
-                peak = self.find_peak_position(heatmap_images[frame_idx][view_idx], colormap_name)
+                heatmap_image = heatmap_images[frame_idx][view_idx]
+                # 将PIL Image转换为numpy数组并归一化到[0,1]
+                heatmap_image_np = np.array(heatmap_image).astype(np.float32) / 255.0
+                heatmap_array = extract_heatmap_from_colormap(heatmap_image_np, colormap_name)
+                max_pos = np.unravel_index(np.argmax(heatmap_array), heatmap_array.shape)
+                peak = (max_pos[1], max_pos[0])  # (x, y) format
                 frame_peaks.append(peak)
             peaks.append(frame_peaks)
 
         return peaks
 
-    def calculate_peak_distance(self, pred_peak: Tuple[int, int], gt_peak: Tuple[int, int]) -> float:
-        """Calculate Euclidean distance between two peaks."""
-        return np.sqrt((pred_peak[0] - gt_peak[0])**2 + (pred_peak[1] - gt_peak[1])**2)
+    def preprocess_image(self, image, min_value=-1, max_value=1):
+        """将 PIL.Image 转换为 torch.Tensor"""
+        image = torch.Tensor(np.array(image, dtype=np.float32))
+        image = image.to(dtype=self.torch_dtype, device=self.device)
+        image = image * ((max_value - min_value) / 255) + min_value
+        # pattern: "B C H W"
+        image = image.permute(2, 0, 1).unsqueeze(0)  # H W C -> 1 C H W
+        return image
 
-    def save_results(
-        self,
-        output: Dict[str, Any],
-        output_dir: str,
-        sample_id: int,
-    ):
-        """Save inference results."""
-        os.makedirs(output_dir, exist_ok=True)
+    def preprocess_video(self, video, min_value=-1, max_value=1):
+        """
+        将 list of PIL.Image 转换为 torch.Tensor
+        参考训练代码中的实现
 
-        # Save output videos
-        for key in ['video_heatmap', 'video_rgb']:
-            if key in output:
-                for view_idx, view_frames in enumerate(output[key]):
-                    view_dir = os.path.join(output_dir, f"sample_{sample_id:04d}_{key}_view_{view_idx}")
-                    os.makedirs(view_dir, exist_ok=True)
+        Args:
+            video: List[PIL.Image] - 视频帧列表
 
-                    for frame_idx, frame in enumerate(view_frames):
-                        if isinstance(frame, Image.Image):
-                            frame.save(os.path.join(view_dir, f"frame_{frame_idx:04d}.png"))
-                        elif isinstance(frame, np.ndarray):
-                            cv2.imwrite(
-                                os.path.join(view_dir, f"frame_{frame_idx:04d}.png"),
-                                cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                            )
+        Returns:
+            torch.Tensor - shape (1, C, T, H, W)
+        """
+        video_tensors = [self.preprocess_image(image, min_value=min_value, max_value=max_value) for image in video]
+        video = torch.stack(video_tensors, dim=0)  # (T, 1, C, H, W)
+        video = video.squeeze(1)  # (T, C, H, W)
+        video = video.permute(1, 0, 2, 3)  # (C, T, H, W)
+        video = video.unsqueeze(0)  # (1, C, T, H, W)
+        return video
 
-        # Save rotation and gripper predictions if available
-        if 'rotation_predictions' in output:
-            np.save(
-                os.path.join(output_dir, f"sample_{sample_id:04d}_rotation_predictions.npy"),
-                output['rotation_predictions']
+    @torch.no_grad()
+    def encode_gt_videos(self, rgb_videos, heatmap_videos, tiled=False, tile_size=(34, 34), tile_stride=(18, 16)):
+        """
+        编码GT RGB和Heatmap视频为VAE latents
+        参考训练代码中的VAEFeatureExtractor.encode_videos
+
+        Args:
+            rgb_videos: List[List[PIL.Image]] - [time][view] RGB视频
+            heatmap_videos: List[List[PIL.Image]] - [time][view] Heatmap视频
+            tiled: 是否使用tiled编码
+            tile_size: tile大小
+            tile_stride: tile步长
+
+        Returns:
+            rgb_features: (num_views, c, t_compressed, h, w) - RGB VAE latents
+            heatmap_features: (num_views, c, t_compressed, h, w) - Heatmap VAE latents
+        """
+        num_frames = len(rgb_videos)
+        num_views = len(rgb_videos[0])
+
+        # 获取VAE encoder
+        vae = self.pipe.vae
+
+        # 按视角分组处理 - RGB
+        all_rgb_view_latents = []
+        for view_idx in range(num_views):
+            # 提取当前视角的所有RGB帧
+            view_rgb_frames = [rgb_videos[t][view_idx] for t in range(num_frames)]
+            # 预处理为tensor: (1, C, T, H, W)
+            view_rgb_video = self.preprocess_video(view_rgb_frames)
+            # Remove batch dimension: (1, C, T, H, W) -> (C, T, H, W)
+            view_rgb_video = view_rgb_video.squeeze(0)
+            # VAE编码: (C, T, H, W) -> (c_latent, t_compressed, h_latent, w_latent)
+            view_rgb_latents = vae.encode(
+                [view_rgb_video],
+                device=self.device,
+                tiled=tiled,
+                tile_size=tile_size,
+                tile_stride=tile_stride
             )
+            view_rgb_latents = view_rgb_latents[0].to(dtype=self.torch_dtype, device=self.device)
+            all_rgb_view_latents.append(view_rgb_latents)
 
-        if 'gripper_predictions' in output:
-            np.save(
-                os.path.join(output_dir, f"sample_{sample_id:04d}_gripper_predictions.npy"),
-                output['gripper_predictions']
+        # 合并所有视角的RGB latents
+        rgb_features = torch.stack(all_rgb_view_latents, dim=0)  # (num_views, c, t, h, w)
+
+        # 按视角分组处理 - Heatmap
+        all_heatmap_view_latents = []
+        for view_idx in range(num_views):
+            # 提取当前视角的所有Heatmap帧
+            view_heatmap_frames = [heatmap_videos[t][view_idx] for t in range(num_frames)]
+            # 预处理为tensor: (1, C, T, H, W)
+            view_heatmap_video = self.preprocess_video(view_heatmap_frames)
+            # Remove batch dimension
+            view_heatmap_video = view_heatmap_video.squeeze(0)
+            # VAE编码
+            view_heatmap_latents = vae.encode(
+                [view_heatmap_video],
+                device=self.device,
+                tiled=tiled,
+                tile_size=tile_size,
+                tile_stride=tile_stride
             )
+            view_heatmap_latents = view_heatmap_latents[0].to(dtype=self.torch_dtype, device=self.device)
+            all_heatmap_view_latents.append(view_heatmap_latents)
 
-        print(f"Results saved to: {output_dir}/sample_{sample_id:04d}_*")
+        # 合并所有视角的Heatmap latents
+        heatmap_features = torch.stack(all_heatmap_view_latents, dim=0)  # (num_views, c, t, h, w)
+
+        return rgb_features, heatmap_features
+
+    @torch.no_grad()
+    def predict_from_gt_latents(self,
+                                 gt_rgb_video: List[List[Image.Image]],
+                                 gt_heatmap_video: List[List[Image.Image]],
+                                 initial_rotation: np.ndarray,
+                                 initial_gripper: int,
+                                 heatmap_latent_scale: float = 1.0) -> Dict[str, np.ndarray]:
+        """
+        从GT视频编码的latents预测旋转和夹爪（用于验证预测器本身是否正常）
+
+        新模型使用VAE decoder的中间特征，预测的是delta值
+
+        Args:
+            gt_rgb_video: List[List[PIL.Image]] - [time][view] GT RGB视频
+            gt_heatmap_video: List[List[PIL.Image]] - [time][view] GT Heatmap视频
+            initial_rotation: (3,) - 初始旋转角度 [roll, pitch, yaw] in degrees
+            initial_gripper: int - 初始夹爪状态
+            heatmap_latent_scale: float - heatmap latent缩放因子
+
+        Returns:
+            Dict包含:
+                - rotation_predictions: (T-1, 3) 旋转预测（度）- 绝对值
+                - gripper_predictions: (T-1,) 夹爪预测 - 绝对状态
+        """
+        # 1. 编码GT视频为VAE latents
+        rgb_latents, heatmap_latents = self.encode_gt_videos(gt_rgb_video, gt_heatmap_video)
+
+        # 应用heatmap缩放
+        if heatmap_latent_scale != 1.0:
+            heatmap_latents = heatmap_latents * heatmap_latent_scale
+
+        # 2. 使用VAE decode_intermediate获取中间特征
+        num_views = rgb_latents.shape[0]
+
+        all_rgb_intermediate = []
+        all_heatmap_intermediate = []
+        all_heatmap_images = []
+
+        for view_idx in range(num_views):
+            view_rgb_latent = rgb_latents[view_idx:view_idx+1]
+            view_heatmap_latent = heatmap_latents[view_idx:view_idx+1]
+
+            # RGB: 只需要中间特征
+            rgb_intermediate = self.vae_decode_intermediate.decode_intermediate(
+                [view_rgb_latent.squeeze(0)], device=self.device
+            )
+            all_rgb_intermediate.append(rgb_intermediate[0])
+
+            # Heatmap: 需要中间特征和完全解码的图像（用于找峰值）
+            heatmap_intermediate, heatmap_full = self.vae_decode_intermediate.decode_intermediate_with_full(
+                [view_heatmap_latent.squeeze(0)], device=self.device
+            )
+            all_heatmap_intermediate.append(heatmap_intermediate[0])
+            all_heatmap_images.append(heatmap_full[0])
+
+        # 合并所有视角
+        rgb_features = torch.stack(all_rgb_intermediate, dim=0)
+        heatmap_features = torch.stack(all_heatmap_intermediate, dim=0)
+        heatmap_images = torch.stack(all_heatmap_images, dim=0)
+
+        # 添加batch维度
+        rgb_features = rgb_features.unsqueeze(0)  # (1, v, c, t, h, w)
+        heatmap_features = heatmap_features.unsqueeze(0)
+        heatmap_images = heatmap_images.unsqueeze(0)
+
+        # 3. 计算future frames数量
+        num_frames = len(gt_rgb_video)
+        num_future_frames = num_frames - 1
+
+        # 4. 使用旋转预测器预测（新模型不需要initial_rotation和initial_gripper输入）
+        rotation_logits, gripper_logits = self.rot_grip_predictor(
+            rgb_features=rgb_features,
+            heatmap_features=heatmap_features,
+            num_future_frames=num_future_frames,
+            heatmap_images=heatmap_images,
+            colormap_name='jet',
+        )
+
+        # 5. 转换logits为预测结果（预测的是delta值）
+        rotation_logits = rotation_logits.squeeze(0)  # (T-1, num_bins*3)
+        rotation_logits = rotation_logits.view(num_future_frames, 3, self.num_rotation_bins)  # (T-1, 3, num_bins)
+
+        rotation_delta_bins = rotation_logits.argmax(dim=-1)  # (T-1, 3)
+
+        # Gripper: (1, T-1, 2) -> (T-1,) - 预测的是变化
+        gripper_logits = gripper_logits.squeeze(0)  # (T-1, 2)
+        gripper_change = gripper_logits.argmax(dim=-1)  # (T-1,) - 0=不变, 1=变化
+
+        # 6. 将delta值转换为绝对值
+        rotation_delta_bins_np = rotation_delta_bins.float().cpu().numpy()
+
+        # rotation delta: 转换为角度变化量
+        rotation_delta_degrees = self._delta_bins_to_degrees(rotation_delta_bins_np)  # (T-1, 3)
+
+        # 注意：训练时delta是基于连续的initial_rotation计算的，所以推理时也应该直接使用连续值
+        # 不要对initial_rotation进行离散化再转回来，这会引入不必要的量化误差
+        initial_rotation_degrees = initial_rotation  # 直接使用连续值
+
+        # 计算累积rotation
+        rotation_predictions = initial_rotation_degrees + rotation_delta_degrees
+        # 归一化到 [-180, 180]
+        rotation_predictions = ((rotation_predictions + 180) % 360) - 180
+
+        # gripper: 根据变化标志计算实际状态
+        # gripper_change[t] 表示第 t 帧是否与第一帧不同（不是累积的翻转信号）
+        gripper_predictions = np.zeros(num_future_frames, dtype=np.int64)
+        for t in range(num_future_frames):
+            if gripper_change[t].item() == 1:  # 与第一帧不同
+                gripper_predictions[t] = 1 - initial_gripper  # 使用相反的状态
+            else:  # 与第一帧相同
+                gripper_predictions[t] = initial_gripper  # 使用相同的状态
+
+        return {
+            'rotation_predictions': rotation_predictions,
+            'gripper_predictions': gripper_predictions,
+        }
+
 
 def convert_colormap_to_heatmap(colormap_images: List[List[Image.Image]], colormap_name: str = 'jet', resolution: int = 64) -> List[List[np.ndarray]]:
     """
@@ -1528,8 +1729,8 @@ class RVTAgent:
         self.projection_interface = ProjectionInterface(args.img_size[0])
         
         self.inferencer = HeatmapInferenceMVRotGrip(
-            lora_checkpoint=args.lora_checkpoint,
-            rot_grip_checkpoint=args.rot_grip_checkpoint,
+            lora_checkpoint_path=args.lora_checkpoint,
+            rot_grip_checkpoint_path=args.rot_grip_checkpoint,
             wan_type=args.wan_type,
             model_base_path=args.model_base_path,
             device=args.device,
@@ -1755,6 +1956,12 @@ class RVTAgent:
         )  # (num_frames, 3)
         
         pred_gripper = output['gripper_predictions']  # (T-1,)
+        if self.args.constant_gripper_num is not None:
+            pred_gripper = np.full_like(pred_gripper, self.args.constant_gripper_num)
+            # print(pred_gripper)
+        
+        pred_sequence_length = pred_position.shape[0]
+        
         # delta_action_position = pred_position[1:] - pred_position[:-1]  # (T, 3)
         # action = np.concatenate([50*delta_action_position, pred_gripper[:, None]], axis=1)  # (T, 4)
 

@@ -248,8 +248,8 @@ class CustomMultiTaskRLBenchEnv(MultiTaskRLBenchEnv):
         grip_mat = obs.gripper_matrix
         grip_pose = obs.gripper_pose
         joint_pos = obs.joint_positions
-        obs.gripper_pose = None
         # obs.gripper_pose = None
+        obs.gripper_pose = None
         obs.gripper_matrix = None
         obs.wrist_camera_matrix = None
         obs.joint_positions = None
@@ -266,10 +266,11 @@ class CustomMultiTaskRLBenchEnv(MultiTaskRLBenchEnv):
                 [obs_dict['low_dim_state'], [time]]).astype(np.float32)
 
         obs.gripper_matrix = grip_mat
-        # obs.gripper_pose = grip_pose
-        obs.joint_positions = joint_pos
         obs.gripper_pose = grip_pose
-        # obs_dict['gripper_pose'] = grip_pose
+        obs.joint_positions = joint_pos
+        obs_dict['gripper_pose'] = grip_pose
+        obs_dict['gripper_matrix'] = grip_mat
+        obs_dict["gripper_open"] = obs.gripper_open
         return obs_dict
 
     def launch(self):

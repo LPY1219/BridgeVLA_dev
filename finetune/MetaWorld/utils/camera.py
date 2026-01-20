@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 from PIL import Image as PIL_Image
 from typing import List
 import open3d as o3d
-import mujoco
 
 
 

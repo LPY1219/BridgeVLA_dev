@@ -52,7 +52,7 @@ class MetaWorldEnv(gym.Env):
             print("Falling back to single camera 'corner2'")
             self.camera = Camera(sim=self.env.sim, cam_names=['corner2'], img_size=self.image_size)
     
-        self.episode_length = self._max_episode_steps = 410
+        self.episode_length = self._max_episode_steps = 610
         self.action_space = self.env.action_space
         self.obs_sensor_dim = self.get_robot_state().shape[0]
 

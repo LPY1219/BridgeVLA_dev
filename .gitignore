@@ -104,6 +104,7 @@ Wan/DiffSynth-Studio/examples/wanvideo/model_inference/temp_ckpt/
 *.safetensors
 Wan/DiffSynth-Studio/__pycache__
 Wan/DiffSynth-Studio/__pycache__/
-
-finetune/RLBench_DM
-finetune/MetaWorld
+finetune/MetaWorld/results/
+finetune/RLBench_DM/eval/
+finetune/RLBench_DM/eval_old/
+finetune/RLBench_DM/tmp
