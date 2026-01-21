@@ -166,7 +166,7 @@ MACHINE5_OUTPUT_BASE="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/inference"
 MACHINE5_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_1/huggingface/Wan2.2-TI2V-5B"
 MACHINE5_LORA_BASE="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/train"
 
-MACHINE6_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/put_lion_8"
+MACHINE6_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/push_T_30"
 MACHINE6_OUTPUT_BASE="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/inference"
 MACHINE6_MODEL_BASE_PATH="/mnt/robot-rfm/user/lpy/huggingface/Wan2.2-TI2V-5B"
 MACHINE6_LORA_BASE="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train"
@@ -260,7 +260,8 @@ CFG_SCALE=1.0
 
 # LoRA checkpoint path (for heatmap diffusion model)
 # Default: Use the specified checkpoint from machine3
-LORA_CHECKPOINT="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_cook6_pourfilter6trail_putlion8_multitask_3camera_multinode_4nodes_32cards_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260115_121502/epoch-99.safetensors"
+# LORA_CHECKPOINT="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_push_T_30_10_3camera_multinode_4nodes_32cards_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260121_111034/epoch-99.safetensors"
+LORA_CHECKPOINT= "/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_push_T_30_3camera_multinode_8nodes_64cards_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260121_033858/epoch-99.safetensors"
 # # Rotation and Gripper checkpoint path (leave empty if not available yet)
 ROT_GRIP_CHECKPOINT="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/mv_rot_grip_v2_view/multinode_4nodes_32cards_view_concat_cook6_pourfilter6trail_putlion8_multitask_local_feat_size_5_seq_24_history_1_3zed_different_projection_true_new_projection_with_gripper_false/20260115_121334/epoch-100.pth"
 #LORA_CHECKPOINT="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/train/from_xm/cook_6_heatmap.safetensors"

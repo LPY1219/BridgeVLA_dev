@@ -167,7 +167,7 @@ MACHINE5_OUTPUT_BASE="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/inference"
 MACHINE5_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_1/huggingface/Wan2.2-TI2V-5B"
 MACHINE5_LORA_BASE="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/train"
 
-MACHINE6_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/"
+MACHINE6_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/push_T_30"
 MACHINE6_OUTPUT_BASE="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/inference"
 MACHINE6_MODEL_BASE_PATH="/mnt/robot-rfm/user/lpy/huggingface/Wan2.2-TI2V-5B"
 MACHINE6_LORA_BASE="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train"
@@ -249,7 +249,7 @@ CFG_SCALE=1.0
 
 # LoRA checkpoint path
 # Default: Use the specified checkpoint from machine3
-LORA_CHECKPOINT="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_pour_3camera_view_concat_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260110_081456/epoch-99.safetensors"
+LORA_CHECKPOINT= "/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_push_T_30_3camera_multinode_8nodes_64cards_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260121_033858/epoch-99.safetensors"
 
 
 # Output directory

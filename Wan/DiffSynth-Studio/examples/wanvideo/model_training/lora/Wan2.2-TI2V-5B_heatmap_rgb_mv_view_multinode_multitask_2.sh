@@ -345,11 +345,11 @@ MACHINE5_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_1/huggingface/Wan2.2-TI2V-5B"
 
 # 机器6的路径配置 - 支持多任务训练（3个任务）
 # MACHINE6_HEATMAP_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/cook_6,/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/pour_filter_6trail,/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/put_lion_8"
-MACHINE6_HEATMAP_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/push_T_30"
+MACHINE6_HEATMAP_DATA_ROOT="/mnt/robot-rfm/user/lpy/data/Franka_data_3zed_5/push_T_30_10"
 MACHINE6_OUTPUT_BASE="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train"
 MACHINE6_MODEL_BASE_PATH="/mnt/robot-rfm/user/lpy/huggingface/Wan2.2-TI2V-5B"
 
-task="push_T_30"
+task="push_T_30_10"
 
 # 根据机器类型设置路径
 if [ "${CURRENT_MACHINE}" = "machine1" ]; then
