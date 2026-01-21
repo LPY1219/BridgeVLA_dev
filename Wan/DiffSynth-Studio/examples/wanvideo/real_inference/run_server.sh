@@ -11,32 +11,32 @@
 MACHINE2_ROOT_PATH="/home/lpy/BridgeVLA_dev"
 MACHINE2_CONDA_PATH="/home/lpy/anaconda3/etc/profile.d/conda.sh"
 MACHINE2_CONDA_ENV="BridgeVLA_DM"
-MACHINE2_MODEL_BASE_PATH="/data/lpy/huggingface/Wan2.2-TI2V-5B-fused"
+MACHINE2_MODEL_BASE_PATH="/data/lpy/huggingface/Wan2.2-TI2V-5B"
 
 # 机器3的配置
 MACHINE3_ROOT_PATH="/DATA/disk0/lpy/BridgeVLA_dev"
 MACHINE3_CONDA_PATH="/home/yw/anaconda3/etc/profile.d/conda.sh"
 MACHINE3_CONDA_ENV="BridgeVLA_DM"
-MACHINE3_MODEL_BASE_PATH="/DATA/disk0/lpy/huggingface/Wan2.2-TI2V-5B-fused"
+MACHINE3_MODEL_BASE_PATH="/DATA/disk0/lpy/huggingface/Wan2.2-TI2V-5B"
 
 
 # 机器4的配置
 MACHINE4_ROOT_PATH="/DATA/disk1/lpy_a100_4/BridgeVLA_dev"
 MACHINE4_CONDA_PATH="/home/yw/anaconda3/etc/profile.d/conda.sh"
 MACHINE4_CONDA_ENV="BridgeVLA_DM"
-MACHINE4_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_4/huggingface/Wan2.2-TI2V-5B-fused"
+MACHINE4_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_4/huggingface/Wan2.2-TI2V-5B"
 
 # 机器1（disk1/lpy）的配置
 MACHINE1_DISK1_ROOT_PATH="/DATA/disk1/lpy_a100_1/BridgeVLA_dev"
 MACHINE1_DISK1_CONDA_PATH="/home/yw/anaconda3/etc/profile.d/conda.sh"
 MACHINE1_DISK1_CONDA_ENV="BridgeVLA_DM"
-MACHINE1_DISK1_MODEL_BASE_PATH="/DATA/disk1/lpy/huggingface/Wan2.2-TI2V-5B-fused"
+MACHINE1_DISK1_MODEL_BASE_PATH="/DATA/disk1/lpy/huggingface/Wan2.2-TI2V-5B"
 
 # 机器5的配置（lpy_a100_1）
 MACHINE5_ROOT_PATH="/DATA/disk1/lpy_a100_1/BridgeVLA_dev"
 MACHINE5_CONDA_PATH="/DATA/disk1/yaoliang/miniconda3/etc/profile.d/conda.sh"
 MACHINE5_CONDA_ENV="BridgeVLA_DM"
-MACHINE5_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_1/huggingface/Wan2.2-TI2V-5B-fused"
+MACHINE5_MODEL_BASE_PATH="/DATA/disk1/lpy_a100_1/huggingface/Wan2.2-TI2V-5B"
 
 # 检测机器并设置环境
 if [ -d "${MACHINE1_ROOT_PATH}" ]; then
@@ -159,7 +159,7 @@ echo ""
 #ROT_GRIP_CHECKPOINT="/DATA/disk1/lpy_a100_1/BridgeVLA_dev/logs/Wan/train/from_xm/cook_6_rot_grip.pth/cook_6_rot_grip.pth"
 
 
-LORA_CHECKPOINT="/DATA/disk1/lpy_a100_4/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/from_xm/3_tasks_rot_grip.pth"
+LORA_CHECKPOINT="/DATA/disk1/lpy_a100_4/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/from_xm/push_T_30_epoch_99.safetensors"
 # # Rotation and Gripper checkpoint path (leave empty if not available yet)
 ROT_GRIP_CHECKPOINT="/DATA/disk1/lpy_a100_4/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/from_xm/3_tasks_rot_grip.pth"
 
