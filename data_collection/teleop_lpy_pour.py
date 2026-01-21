@@ -645,9 +645,9 @@ def main():
     gripper_thres = 0.05
     # instruction = "put the lion on the top shelf"
     instruction = "pour the water from the cup into the plate"
-    task_idx =11  # 起始轨迹序号 # TODO
+    task_idx =2  # 起始轨迹序号 # TODO
 
-    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_5" # TODO
+    data_result_dir = "/media/casia/data4/lpy/3zed_data/raw_data_debug" # TODO
     save_interval = 3  # 每1步保存一次数据（即60/3=20Hz保存频率）
     resolution = "VGA"  # 图像分辨率：可选 "HD1080" (1080x1920) 或 "VGA" (376x672)
 

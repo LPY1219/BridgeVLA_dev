@@ -9,8 +9,8 @@ target_joints_cook =[0.0784198723430451, 0.1658338288898725, 0.37200969253987426
 
 # fa.open_gripper()
 # fa.reset_joints()
-# fa.goto_joints(
-#     target_joints_cook,
-#     duration=5.0,
-#     ignore_virtual_walls=True
-# )
+fa.goto_joints(
+    target_joints_cook,
+    duration=5.0,
+    ignore_virtual_walls=True
+)
