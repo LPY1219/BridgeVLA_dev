@@ -249,7 +249,7 @@ CFG_SCALE=1.0
 
 # LoRA checkpoint path
 # Default: Use the specified checkpoint from machine3
-LORA_CHECKPOINT= "/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_push_T_30_3camera_multinode_8nodes_64cards_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260121_033858/epoch-99.safetensors"
+LORA_CHECKPOINT="/mnt/robot-rfm/user/lpy/BridgeVLA_dev/logs/Wan/train/Wan2.2-TI2V-5B_heatmap_rgb_lora_view/5_trajectory_push_T_30_3camera_multinode_8nodes_64cards_False_history_1_seq_24_new_projection_rgb_loss_0.08/20260121_033858/epoch-99.safetensors"
 
 
 # Output directory
