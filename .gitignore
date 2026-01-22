@@ -101,6 +101,7 @@ Wan/DiffSynth-Studio/heatmap_inference_results/
 Wan/DiffSynth-Studio/projection_test_results/
 Wan/DiffSynth-Studio/examples/wanvideo/model_inference/mvtrack_inference_results/
 Wan/DiffSynth-Studio/examples/wanvideo/model_inference/temp_ckpt/
+!Wan/DiffSynth-Studio/diffsynth/data/
 *.safetensors
 Wan/DiffSynth-Studio/__pycache__
 Wan/DiffSynth-Studio/__pycache__/
